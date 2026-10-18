@@ -1,0 +1,40 @@
+[project]
+name = "t2sql"
+version = "0.1.0"
+description = "Text-to-SQL agent over PostgreSQL (Chinook) with LangGraph"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "sqlglot>=27",
+    "psycopg[binary]>=3.2",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "python-dotenv>=1.0",
+    "langgraph>=1.2.16",
+    "langchain-core>=1.6.12",
+    "langchain-google-genai>=4.4.2",
+    "langchain-groq>=1.1.3",
+    "langchain-anthropic>=1.7.6",
+    "typer>=0.27.3",
+    "rich>=15.0.0",
+    "fastembed>=0.9.0",
+    "pyyaml>=6",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+
+[project.scripts]
+t2sql = "t2sql.cli:run"
+
+[dependency-groups]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/t2sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: needs the docker-compose Postgres running (auto-skipped otherwise)"]

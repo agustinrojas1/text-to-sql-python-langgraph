@@ -1,0 +1,23 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: t2sql-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-t2sql_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-t2sql_admin}
+      POSTGRES_DB: chinook
+      T2SQL_READER_PASSWORD: ${T2SQL_READER_PASSWORD:-t2sql_reader}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Files run in alphabetical order, only when the data volume is empty.
+      - ./db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d chinook"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:

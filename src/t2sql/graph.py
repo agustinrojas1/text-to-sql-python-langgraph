@@ -1,0 +1,78 @@
+"""LangGraph definition.
+
+classify -> (out of scope -> respond_out_of_scope -> END)
+         -> retrieve_schema -> generate_sql -> validate_sql -> execute -> respond -> END
+A guard rejection, an execution error or a (once) empty result goes to repair ->
+generate_sql while attempts remain (T2SQL_MAX_REPAIRS); then respond_error / respond.
+"""
+
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
+
+from t2sql.config import Settings, get_settings
+from t2sql.db import execute_readonly
+from t2sql.llm import LLM
+from t2sql.nodes.classify import make_classify, make_respond_out_of_scope, route_after_classify
+from t2sql.nodes.execute import make_execute
+from t2sql.nodes.generate import make_generate_sql
+from t2sql.nodes.repair import make_repair, make_route_after_execute, make_route_after_validate
+from t2sql.nodes.respond import make_respond, make_respond_error
+from t2sql.nodes.retrieve import make_retrieve_schema
+from t2sql.nodes.validate import make_validate_sql
+from t2sql.retrieval import SchemaRetriever
+from t2sql.schema_index import default_retriever
+from t2sql.tracing import append_trace_file, summarize_trace
+from t2sql.state import AgentState, Deps, Executor
+
+
+def build_graph(
+    llm: LLM,
+    retriever: SchemaRetriever | None = None,
+    settings: Settings | None = None,
+    executor: Executor | None = None,
+) -> CompiledStateGraph:
+    settings = settings or get_settings()
+    deps = Deps(
+        llm=llm,
+        retriever=retriever or default_retriever(settings),
+        settings=settings,
+        executor=executor or (lambda sql: execute_readonly(sql, settings)),
+    )
+
+    g = StateGraph(AgentState)
+    g.add_node("classify", make_classify(deps))
+    g.add_node("respond_out_of_scope", make_respond_out_of_scope())
+    g.add_node("retrieve_schema", make_retrieve_schema(deps))
+    g.add_node("generate_sql", make_generate_sql(deps))
+    g.add_node("validate_sql", make_validate_sql(deps))
+    g.add_node("execute", make_execute(deps))
+    g.add_node("repair", make_repair(deps))
+    g.add_node("respond", make_respond(deps))
+    g.add_node("respond_error", make_respond_error())
+
+    g.add_edge(START, "classify")
+    g.add_conditional_edges("classify", route_after_classify, ["retrieve_schema", "respond_out_of_scope"])
+    g.add_edge("respond_out_of_scope", END)
+    g.add_edge("retrieve_schema", "generate_sql")
+    g.add_edge("generate_sql", "validate_sql")
+    g.add_conditional_edges(
+        "validate_sql", make_route_after_validate(deps), ["execute", "repair", "respond_error"]
+    )
+    g.add_conditional_edges(
+        "execute", make_route_after_execute(deps), ["respond", "repair", "respond_error"]
+    )
+    g.add_edge("repair", "generate_sql")
+    g.add_edge("respond", END)
+    g.add_edge("respond_error", END)
+    return g.compile()
+
+
+def run_question(
+    graph: CompiledStateGraph, question: str, settings: Settings | None = None
+) -> AgentState:
+    """Run the graph, attach the trace summary and (if configured) append the trace file."""
+    state = graph.invoke({"question": question, "attempts": 0, "attempt_history": [], "trace": []})
+    state["summary"] = summarize_trace(state["trace"])
+    if settings and settings.trace_file:
+        append_trace_file(settings.trace_file, question, state)
+    return state

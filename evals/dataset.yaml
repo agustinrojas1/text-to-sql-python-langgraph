@@ -1,0 +1,500 @@
+# Evaluation dataset over Chinook (see evals/run.py and README).
+#
+# 55 items = 50 answerable questions (20 easy, 20 medium, 10 hard) + 5 out_of_scope
+# questions that the agent must reject. Languages are mixed English / Spanish.
+#
+# Fields:
+#   id            stable identifier (e = easy, m = medium, h = hard, o = out of scope)
+#   level         easy (single table) | medium (joins + aggregations) |
+#                 hard (subqueries, window functions, dates) | out_of_scope
+#   language      en | es
+#   question      what the user asks (column-shaped hints such as "show first name and
+#                 last name" are given where the answer would otherwise be ambiguous)
+#   sql           reference PostgreSQL query (null for out_of_scope); executed against the
+#                 real database by tests/test_eval_dataset.py
+#   tables        tables the reference SQL reads (CTEs excluded); derived with sqlglot
+#                 (sql_guard.validate_sql) and checked by tests/test_eval_dataset.py
+#   order_matters true when the question implies an order (top-N, cumulative...):
+#                 row order is then part of the comparison
+#
+# Rankings (top-N) only appear where there is no tie at the cutoff or inside the top-N,
+# so the expected answer is unambiguous.
+
+- id: e01
+  level: easy
+  language: en
+  question: "How many customers are there?"
+  sql: |-
+    SELECT count(*) AS customers FROM customer
+  tables: [customer]
+
+- id: e02
+  level: easy
+  language: es
+  question: "¿Cuántos empleados hay?"
+  sql: |-
+    SELECT count(*) AS empleados FROM employee
+  tables: [employee]
+
+- id: e03
+  level: easy
+  language: en
+  question: "List the names of all music genres, alphabetically."
+  sql: |-
+    SELECT name FROM genre ORDER BY name
+  tables: [genre]
+  order_matters: true
+
+- id: e04
+  level: easy
+  language: es
+  question: "¿Cuántas canciones hay en total?"
+  sql: |-
+    SELECT count(*) AS canciones FROM track
+  tables: [track]
+
+- id: e05
+  level: easy
+  language: en
+  question: "What is the total revenue across all invoices?"
+  sql: |-
+    SELECT sum(total) AS revenue FROM invoice
+  tables: [invoice]
+
+- id: e06
+  level: easy
+  language: es
+  question: "¿Cuántos clientes hay en Brasil?"
+  sql: |-
+    SELECT count(*) FROM customer WHERE country = 'Brazil'
+  tables: [customer]
+
+- id: e07
+  level: easy
+  language: en
+  question: "List the names of the media types available."
+  sql: |-
+    SELECT name FROM media_type
+  tables: [media_type]
+
+- id: e08
+  level: easy
+  language: es
+  question: "¿Qué cargos distintos tienen los empleados?"
+  sql: |-
+    SELECT DISTINCT title FROM employee
+  tables: [employee]
+
+- id: e09
+  level: easy
+  language: en
+  question: "Which employees were hired after January 1st, 2003? Show first name, last name and hire date."
+  sql: |-
+    SELECT first_name, last_name, hire_date FROM employee WHERE hire_date > '2003-01-01'
+  tables: [employee]
+
+- id: e10
+  level: easy
+  language: es
+  question: "¿Cuál es la canción más larga? Mostrá su nombre y su duración en milisegundos."
+  sql: |-
+    SELECT name, milliseconds FROM track ORDER BY milliseconds DESC LIMIT 1
+  tables: [track]
+  order_matters: true
+
+- id: e11
+  level: easy
+  language: en
+  question: "How many invoices were issued in 2023?"
+  sql: |-
+    SELECT count(*) FROM invoice WHERE EXTRACT(YEAR FROM invoice_date) = 2023
+  tables: [invoice]
+
+- id: e12
+  level: easy
+  language: es
+  question: "¿Cuál es el precio unitario promedio de las canciones?"
+  sql: |-
+    SELECT avg(unit_price) FROM track
+  tables: [track]
+
+- id: e13
+  level: easy
+  language: en
+  question: "In how many different countries do our customers live?"
+  sql: |-
+    SELECT count(DISTINCT country) FROM customer
+  tables: [customer]
+
+- id: e14
+  level: easy
+  language: es
+  question: "¿Cuántos álbumes hay?"
+  sql: |-
+    SELECT count(*) FROM album
+  tables: [album]
+
+- id: e15
+  level: easy
+  language: en
+  question: "How many artists have a name that starts with the letter A?"
+  sql: |-
+    SELECT count(*) FROM artist WHERE name ILIKE 'A%'
+  tables: [artist]
+
+- id: e16
+  level: easy
+  language: es
+  question: "¿Cuál es el total facturado por país de facturación? Ordenado de mayor a menor."
+  sql: |-
+    SELECT billing_country, sum(total) AS total FROM invoice GROUP BY billing_country ORDER BY total DESC, billing_country
+  tables: [invoice]
+  order_matters: true
+
+- id: e17
+  level: easy
+  language: en
+  question: "What is the largest invoice total ever recorded?"
+  sql: |-
+    SELECT max(total) FROM invoice
+  tables: [invoice]
+
+- id: e18
+  level: easy
+  language: es
+  question: "¿Cuántas canciones cuestan más de 0.99?"
+  sql: |-
+    SELECT count(*) FROM track WHERE unit_price > 0.99
+  tables: [track]
+
+- id: e19
+  level: easy
+  language: en
+  question: "How many customers do not have a company listed?"
+  sql: |-
+    SELECT count(*) FROM customer WHERE company IS NULL
+  tables: [customer]
+
+- id: e20
+  level: easy
+  language: es
+  question: "¿Qué clientes son de Alemania? Mostrá nombre, apellido y ciudad."
+  sql: |-
+    SELECT first_name, last_name, city FROM customer WHERE country = 'Germany'
+  tables: [customer]
+
+- id: m01
+  level: medium
+  language: en
+  question: "How many tracks does each genre have? Show the genre name and the count."
+  sql: |-
+    SELECT g.name, count(*) AS tracks FROM genre g JOIN track t ON t.genre_id = g.genre_id GROUP BY g.name
+  tables: [genre, track]
+
+- id: m02
+  level: medium
+  language: es
+  question: "¿Cuáles son los 3 artistas con más álbumes? Mostrá el nombre y la cantidad."
+  sql: |-
+    SELECT ar.name, count(*) AS albumes FROM artist ar JOIN album al ON al.artist_id = ar.artist_id GROUP BY ar.artist_id, ar.name ORDER BY albumes DESC LIMIT 3
+  tables: [album, artist]
+  order_matters: true
+
+- id: m03
+  level: medium
+  language: en
+  question: "Who are the top 3 customers by total spending? Show first name, last name and total spent."
+  sql: |-
+    SELECT c.first_name, c.last_name, sum(i.total) AS spent FROM customer c JOIN invoice i ON i.customer_id = c.customer_id GROUP BY c.customer_id, c.first_name, c.last_name ORDER BY spent DESC LIMIT 3
+  tables: [customer, invoice]
+  order_matters: true
+
+- id: m04
+  level: medium
+  language: es
+  question: "¿Qué género tiene más canciones? Mostrá el nombre del género y la cantidad."
+  sql: |-
+    SELECT g.name, count(*) AS canciones FROM genre g JOIN track t ON t.genre_id = g.genre_id GROUP BY g.name ORDER BY canciones DESC LIMIT 1
+  tables: [genre, track]
+  order_matters: true
+
+- id: m05
+  level: medium
+  language: en
+  question: "Which artist has the most tracks? Show the artist name and the number of tracks."
+  sql: |-
+    SELECT ar.name, count(*) AS tracks FROM artist ar JOIN album al ON al.artist_id = ar.artist_id JOIN track t ON t.album_id = al.album_id GROUP BY ar.artist_id, ar.name ORDER BY tracks DESC LIMIT 1
+  tables: [album, artist, track]
+  order_matters: true
+
+- id: m06
+  level: medium
+  language: es
+  question: "¿Cuántas canciones tiene cada playlist? Mostrá el nombre de la playlist y la cantidad."
+  sql: |-
+    SELECT p.name, count(pt.track_id) AS canciones FROM playlist p LEFT JOIN playlist_track pt ON pt.playlist_id = p.playlist_id GROUP BY p.playlist_id, p.name
+  tables: [playlist, playlist_track]
+
+- id: m07
+  level: medium
+  language: en
+  question: "Which sales support agent has the most customers assigned? Show the agent's first name, last name and customer count."
+  sql: |-
+    SELECT e.first_name, e.last_name, count(*) AS customers FROM employee e JOIN customer c ON c.support_rep_id = e.employee_id GROUP BY e.employee_id, e.first_name, e.last_name ORDER BY customers DESC LIMIT 1
+  tables: [customer, employee]
+  order_matters: true
+
+- id: m08
+  level: medium
+  language: es
+  question: "¿Cuál es el ingreso total por género musical? Mostrá el género y el ingreso (precio unitario por cantidad)."
+  sql: |-
+    SELECT g.name, sum(il.unit_price * il.quantity) AS ingreso FROM invoice_line il JOIN track t ON t.track_id = il.track_id JOIN genre g ON g.genre_id = t.genre_id GROUP BY g.name
+  tables: [genre, invoice_line, track]
+
+- id: m09
+  level: medium
+  language: en
+  question: "Which customers bought tracks from the Classical genre? Show first and last name, without duplicates."
+  sql: |-
+    SELECT DISTINCT c.first_name, c.last_name FROM customer c JOIN invoice i ON i.customer_id = c.customer_id JOIN invoice_line il ON il.invoice_id = i.invoice_id JOIN track t ON t.track_id = il.track_id JOIN genre g ON g.genre_id = t.genre_id WHERE g.name = 'Classical'
+  tables: [customer, genre, invoice, invoice_line, track]
+
+- id: m10
+  level: medium
+  language: es
+  question: "¿Qué clientes compraron canciones de Jazz? Mostrá nombre y apellido sin repetir."
+  sql: |-
+    SELECT DISTINCT c.first_name, c.last_name FROM customer c JOIN invoice i ON i.customer_id = c.customer_id JOIN invoice_line il ON il.invoice_id = i.invoice_id JOIN track t ON t.track_id = il.track_id JOIN genre g ON g.genre_id = t.genre_id WHERE g.name = 'Jazz'
+  tables: [customer, genre, invoice, invoice_line, track]
+
+- id: m11
+  level: medium
+  language: es
+  question: "¿Cuál es el promedio del total de las facturas por país del cliente?"
+  sql: |-
+    SELECT c.country, avg(i.total) AS promedio FROM customer c JOIN invoice i ON i.customer_id = c.customer_id GROUP BY c.country
+  tables: [customer, invoice]
+
+- id: m12
+  level: medium
+  language: en
+  question: "What are the 3 albums with the most tracks? Show the album title and the track count."
+  sql: |-
+    SELECT al.title, count(*) AS tracks FROM album al JOIN track t ON t.album_id = al.album_id GROUP BY al.album_id, al.title ORDER BY tracks DESC, al.title LIMIT 3
+  tables: [album, track]
+  order_matters: true
+
+- id: m13
+  level: medium
+  language: es
+  question: "¿Cuántas canciones hay en la playlist 'Classical'?"
+  sql: |-
+    SELECT count(*) FROM playlist p JOIN playlist_track pt ON pt.playlist_id = p.playlist_id WHERE p.name = 'Classical'
+  tables: [playlist, playlist_track]
+
+- id: m14
+  level: medium
+  language: en
+  question: "How much has the customer Helena Holý spent in total?"
+  sql: |-
+    SELECT sum(i.total) FROM customer c JOIN invoice i ON i.customer_id = c.customer_id WHERE c.first_name = 'Helena' AND c.last_name = 'Holý'
+  tables: [customer, invoice]
+
+- id: m15
+  level: medium
+  language: es
+  question: "¿Qué agente de soporte generó más ingresos por las ventas de sus clientes? Mostrá nombre, apellido e ingreso."
+  sql: |-
+    SELECT e.first_name, e.last_name, sum(i.total) AS ingreso FROM employee e JOIN customer c ON c.support_rep_id = e.employee_id JOIN invoice i ON i.customer_id = c.customer_id GROUP BY e.employee_id, e.first_name, e.last_name ORDER BY ingreso DESC LIMIT 1
+  tables: [customer, employee, invoice]
+  order_matters: true
+
+- id: m16
+  level: medium
+  language: en
+  question: "How many units were sold for each media type? Show the media type name and total quantity."
+  sql: |-
+    SELECT m.name, sum(il.quantity) AS units FROM media_type m JOIN track t ON t.media_type_id = m.media_type_id JOIN invoice_line il ON il.track_id = t.track_id GROUP BY m.name
+  tables: [invoice_line, media_type, track]
+
+- id: m17
+  level: medium
+  language: es
+  question: "Mostrá los álbumes de AC/DC con su cantidad de canciones."
+  sql: |-
+    SELECT al.title, count(t.track_id) AS canciones FROM artist ar JOIN album al ON al.artist_id = ar.artist_id JOIN track t ON t.album_id = al.album_id WHERE ar.name = 'AC/DC' GROUP BY al.album_id, al.title
+  tables: [album, artist, track]
+
+- id: m18
+  level: medium
+  language: en
+  question: "Which German customers have spent more than 40 dollars in total? Show first name, last name and total."
+  sql: |-
+    SELECT c.first_name, c.last_name, sum(i.total) AS spent FROM customer c JOIN invoice i ON i.customer_id = c.customer_id WHERE c.country = 'Germany' GROUP BY c.customer_id, c.first_name, c.last_name HAVING sum(i.total) > 40
+  tables: [customer, invoice]
+
+- id: m19
+  level: medium
+  language: es
+  question: "¿Cuáles son los 3 artistas que más ingresos generaron? Mostrá el nombre y el ingreso."
+  sql: |-
+    SELECT ar.name, sum(il.unit_price * il.quantity) AS ingreso FROM artist ar JOIN album al ON al.artist_id = ar.artist_id JOIN track t ON t.album_id = al.album_id JOIN invoice_line il ON il.track_id = t.track_id GROUP BY ar.artist_id, ar.name ORDER BY ingreso DESC LIMIT 3
+  tables: [album, artist, invoice_line, track]
+  order_matters: true
+
+- id: m20
+  level: medium
+  language: en
+  question: "Which employees have no customers assigned? Show first and last name."
+  sql: |-
+    SELECT e.first_name, e.last_name FROM employee e LEFT JOIN customer c ON c.support_rep_id = e.employee_id WHERE c.customer_id IS NULL
+  tables: [customer, employee]
+
+- id: h01
+  level: hard
+  language: en
+  question: "Which customers have spent more than the average customer? Show first name, last name and total spent."
+  sql: |-
+    WITH spend AS (
+      SELECT c.customer_id, c.first_name, c.last_name, sum(i.total) AS spent
+      FROM customer c JOIN invoice i ON i.customer_id = c.customer_id
+      GROUP BY c.customer_id, c.first_name, c.last_name)
+    SELECT first_name, last_name, spent FROM spend WHERE spent > (SELECT avg(spent) FROM spend)
+  tables: [customer, invoice]
+
+- id: h02
+  level: hard
+  language: es
+  question: "Mostrá la facturación total por año y su variación respecto al año anterior."
+  sql: |-
+    WITH yearly AS (
+      SELECT EXTRACT(YEAR FROM invoice_date)::int AS anio, sum(total) AS total FROM invoice GROUP BY 1)
+    SELECT anio, total, total - LAG(total) OVER (ORDER BY anio) AS variacion FROM yearly
+  tables: [invoice]
+
+- id: h03
+  level: hard
+  language: en
+  question: "For each customer from Brazil, show first name, last name and the date and total of their most recent invoice."
+  sql: |-
+    SELECT first_name, last_name, invoice_date, total FROM (
+      SELECT c.first_name, c.last_name, i.invoice_date, i.total,
+             ROW_NUMBER() OVER (PARTITION BY c.customer_id ORDER BY i.invoice_date DESC) AS rn
+      FROM customer c JOIN invoice i ON i.customer_id = c.customer_id
+      WHERE c.country = 'Brazil') x
+    WHERE rn = 1
+  tables: [customer, invoice]
+
+- id: h04
+  level: hard
+  language: es
+  question: "¿Qué género fue el más vendido (por ingreso) en cada año? Mostrá año, género e ingreso."
+  sql: |-
+    WITH gy AS (
+      SELECT EXTRACT(YEAR FROM i.invoice_date)::int AS anio, g.name AS genero, sum(il.unit_price * il.quantity) AS ingreso
+      FROM invoice i JOIN invoice_line il ON il.invoice_id = i.invoice_id
+      JOIN track t ON t.track_id = il.track_id JOIN genre g ON g.genre_id = t.genre_id
+      GROUP BY 1, g.name)
+    SELECT anio, genero, ingreso FROM (
+      SELECT anio, genero, ingreso, RANK() OVER (PARTITION BY anio ORDER BY ingreso DESC) AS rk FROM gy) x
+    WHERE rk = 1
+  tables: [genre, invoice, invoice_line, track]
+
+- id: h05
+  level: hard
+  language: en
+  question: "Show the cumulative revenue month by month during 2024."
+  sql: |-
+    WITH monthly AS (
+      SELECT EXTRACT(MONTH FROM invoice_date)::int AS month, sum(total) AS revenue
+      FROM invoice WHERE EXTRACT(YEAR FROM invoice_date) = 2024 GROUP BY 1)
+    SELECT month, sum(revenue) OVER (ORDER BY month) AS cumulative_revenue FROM monthly
+  tables: [invoice]
+  order_matters: true
+
+- id: h06
+  level: hard
+  language: es
+  question: "¿Qué clientes compraron en 2021 pero no compraron nada en 2025? Mostrá nombre y apellido."
+  sql: |-
+    SELECT c.first_name, c.last_name FROM customer c
+    WHERE EXISTS (SELECT 1 FROM invoice i WHERE i.customer_id = c.customer_id AND EXTRACT(YEAR FROM i.invoice_date) = 2021)
+      AND NOT EXISTS (SELECT 1 FROM invoice i WHERE i.customer_id = c.customer_id AND EXTRACT(YEAR FROM i.invoice_date) = 2025)
+  tables: [customer, invoice]
+
+- id: h07
+  level: hard
+  language: en
+  question: "How many tracks have never been sold?"
+  sql: |-
+    SELECT count(*) FROM track t WHERE NOT EXISTS (SELECT 1 FROM invoice_line il WHERE il.track_id = t.track_id)
+  tables: [invoice_line, track]
+
+- id: h08
+  level: hard
+  language: es
+  question: "¿Qué artistas generaron más ingresos que el promedio de ingresos por artista? Mostrá el artista y su ingreso."
+  sql: |-
+    WITH rev AS (
+      SELECT ar.artist_id, ar.name, sum(il.unit_price * il.quantity) AS ingreso
+      FROM artist ar JOIN album al ON al.artist_id = ar.artist_id
+      JOIN track t ON t.album_id = al.album_id JOIN invoice_line il ON il.track_id = t.track_id
+      GROUP BY ar.artist_id, ar.name)
+    SELECT name, ingreso FROM rev WHERE ingreso > (SELECT avg(ingreso) FROM rev)
+  tables: [album, artist, invoice_line, track]
+
+- id: h09
+  level: hard
+  language: en
+  question: "What percentage of the total revenue does each year represent?"
+  sql: |-
+    SELECT EXTRACT(YEAR FROM invoice_date)::int AS year, 100.0 * sum(total) / sum(sum(total)) OVER () AS pct
+    FROM invoice GROUP BY 1
+  tables: [invoice]
+
+- id: h10
+  level: hard
+  language: es
+  question: "¿Qué clientes compraron en los cinco años, de 2021 a 2025? Mostrá nombre y apellido."
+  sql: |-
+    SELECT c.first_name, c.last_name FROM customer c JOIN invoice i ON i.customer_id = c.customer_id
+    WHERE EXTRACT(YEAR FROM i.invoice_date) BETWEEN 2021 AND 2025
+    GROUP BY c.customer_id, c.first_name, c.last_name
+    HAVING count(DISTINCT EXTRACT(YEAR FROM i.invoice_date)) = 5
+  tables: [customer, invoice]
+
+- id: o01
+  level: out_of_scope
+  language: en
+  question: "What will the weather be like in Santiago tomorrow?"
+  sql: null
+  tables: []
+
+- id: o02
+  level: out_of_scope
+  language: es
+  question: "Borrá todas las facturas del cliente con id 5."
+  sql: null
+  tables: []
+
+- id: o03
+  level: out_of_scope
+  language: es
+  question: "¿Quién ganó el Mundial de fútbol de 2022?"
+  sql: null
+  tables: []
+
+- id: o04
+  level: out_of_scope
+  language: en
+  question: "Write a Python function that reverses a string."
+  sql: null
+  tables: []
+
+- id: o05
+  level: out_of_scope
+  language: es
+  question: "¿Cuánto sueldo cobra cada empleado?"
+  sql: null
+  tables: []

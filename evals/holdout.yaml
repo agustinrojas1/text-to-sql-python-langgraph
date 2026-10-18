@@ -1,0 +1,149 @@
+# Held-out probe set for the SCHEMA RETRIEVER only (retrieval-only runs; see docs/eval-findings.md).
+#
+# Written before the retrieval fix was designed and never used to tune it, to check that the fix
+# generalises instead of overfitting evals/dataset.yaml. Same format as dataset.yaml; the
+# reference SQL is only here to derive `tables` and to prove the question is answerable.
+
+- id: p01
+  level: medium
+  language: en
+  question: "Who purchased Metal songs? Give me their names."
+  sql: |-
+    SELECT DISTINCT c.first_name, c.last_name FROM customer c JOIN invoice i ON i.customer_id = c.customer_id JOIN invoice_line il ON il.invoice_id = i.invoice_id JOIN track t ON t.track_id = il.track_id JOIN genre g ON g.genre_id = t.genre_id WHERE g.name = 'Metal'
+  tables: [customer, genre, invoice, invoice_line, track]
+
+- id: p02
+  level: medium
+  language: es
+  question: "¿Qué compradores adquirieron temas de Reggae? Quiero nombre y apellido."
+  sql: |-
+    SELECT DISTINCT c.first_name, c.last_name FROM customer c JOIN invoice i ON i.customer_id = c.customer_id JOIN invoice_line il ON il.invoice_id = i.invoice_id JOIN track t ON t.track_id = il.track_id JOIN genre g ON g.genre_id = t.genre_id WHERE g.name = 'Reggae'
+  tables: [customer, genre, invoice, invoice_line, track]
+
+- id: p03
+  level: medium
+  language: en
+  question: "How much revenue did the artist U2 generate?"
+  sql: |-
+    SELECT sum(il.unit_price * il.quantity) AS revenue FROM artist ar JOIN album al ON al.artist_id = ar.artist_id JOIN track t ON t.album_id = al.album_id JOIN invoice_line il ON il.track_id = t.track_id WHERE ar.name = 'U2'
+  tables: [album, artist, invoice_line, track]
+
+- id: p04
+  level: easy
+  language: es
+  question: "¿Cuál es la facturación de cada mes de 2023?"
+  sql: |-
+    SELECT EXTRACT(MONTH FROM invoice_date)::int AS mes, sum(total) AS total FROM invoice WHERE EXTRACT(YEAR FROM invoice_date) = 2023 GROUP BY 1
+  tables: [invoice]
+
+- id: p05
+  level: medium
+  language: en
+  question: "Which album sold the most units? Show the title and the units."
+  sql: |-
+    SELECT al.title, sum(il.quantity) AS units FROM album al JOIN track t ON t.album_id = al.album_id JOIN invoice_line il ON il.track_id = t.track_id GROUP BY al.album_id, al.title ORDER BY units DESC LIMIT 1
+  tables: [album, invoice_line, track]
+
+- id: p06
+  level: medium
+  language: es
+  question: "¿Cuánto gastó cada cliente de Francia? Mostrá nombre, apellido y total."
+  sql: |-
+    SELECT c.first_name, c.last_name, sum(i.total) AS gasto FROM customer c JOIN invoice i ON i.customer_id = c.customer_id WHERE c.country = 'France' GROUP BY c.customer_id, c.first_name, c.last_name
+  tables: [customer, invoice]
+
+- id: p07
+  level: medium
+  language: en
+  question: "Which playlists contain the song 'Fast As a Shark'?"
+  sql: |-
+    SELECT p.name FROM playlist p JOIN playlist_track pt ON pt.playlist_id = p.playlist_id JOIN track t ON t.track_id = pt.track_id WHERE t.name = 'Fast As a Shark'
+  tables: [playlist, playlist_track, track]
+
+- id: p08
+  level: easy
+  language: es
+  question: "¿Qué empleados le reportan a Nancy Edwards? Mostrá nombre y apellido."
+  sql: |-
+    SELECT e.first_name, e.last_name FROM employee e JOIN employee m ON e.reports_to = m.employee_id WHERE m.first_name = 'Nancy' AND m.last_name = 'Edwards'
+  tables: [employee]
+
+- id: p09
+  level: hard
+  language: en
+  question: "Which genres have never been bought by anyone?"
+  sql: |-
+    SELECT g.name FROM genre g WHERE NOT EXISTS (SELECT 1 FROM track t JOIN invoice_line il ON il.track_id = t.track_id WHERE t.genre_id = g.genre_id)
+  tables: [genre, invoice_line, track]
+
+- id: p10
+  level: medium
+  language: es
+  question: "¿Cuántas unidades se vendieron de canciones de Queen?"
+  sql: |-
+    SELECT sum(il.quantity) FROM artist ar JOIN album al ON al.artist_id = ar.artist_id JOIN track t ON t.album_id = al.album_id JOIN invoice_line il ON il.track_id = t.track_id WHERE ar.name = 'Queen'
+  tables: [album, artist, invoice_line, track]
+
+- id: p11
+  level: medium
+  language: en
+  question: "What is the average length in minutes of a Jazz track?"
+  sql: |-
+    SELECT avg(t.milliseconds) / 60000.0 FROM track t JOIN genre g ON g.genre_id = t.genre_id WHERE g.name = 'Jazz'
+  tables: [genre, track]
+
+- id: p12
+  level: medium
+  language: es
+  question: "¿Qué clientes tiene asignados la agente Jane Peacock? Mostrá nombre y apellido."
+  sql: |-
+    SELECT c.first_name, c.last_name FROM customer c JOIN employee e ON e.employee_id = c.support_rep_id WHERE e.first_name = 'Jane' AND e.last_name = 'Peacock'
+  tables: [customer, employee]
+
+- id: p13
+  level: medium
+  language: en
+  question: "How much revenue did each sales agent bring in during 2022?"
+  sql: |-
+    SELECT e.first_name, e.last_name, sum(i.total) AS revenue FROM employee e JOIN customer c ON c.support_rep_id = e.employee_id JOIN invoice i ON i.customer_id = c.customer_id WHERE EXTRACT(YEAR FROM i.invoice_date) = 2022 GROUP BY e.employee_id, e.first_name, e.last_name
+  tables: [customer, employee, invoice]
+
+- id: p14
+  level: medium
+  language: es
+  question: "¿Cuántas canciones hay en cada formato de archivo?"
+  sql: |-
+    SELECT m.name, count(*) FROM media_type m JOIN track t ON t.media_type_id = m.media_type_id GROUP BY m.name
+  tables: [media_type, track]
+
+- id: p15
+  level: medium
+  language: en
+  question: "Which composers' songs generated the most revenue? Top 3 with revenue."
+  sql: |-
+    SELECT t.composer, sum(il.unit_price * il.quantity) AS revenue FROM track t JOIN invoice_line il ON il.track_id = t.track_id WHERE t.composer IS NOT NULL GROUP BY t.composer ORDER BY revenue DESC LIMIT 3
+  tables: [invoice_line, track]
+
+- id: p16
+  level: medium
+  language: es
+  question: "Mostrá las compras de los clientes de Canadá en 2024: número de factura, fecha y total."
+  sql: |-
+    SELECT i.invoice_id, i.invoice_date, i.total FROM customer c JOIN invoice i ON i.customer_id = c.customer_id WHERE c.country = 'Canada' AND EXTRACT(YEAR FROM i.invoice_date) = 2024
+  tables: [customer, invoice]
+
+- id: p17
+  level: hard
+  language: en
+  question: "Which artists have albums but none of their songs were ever purchased?"
+  sql: |-
+    SELECT ar.name FROM artist ar WHERE EXISTS (SELECT 1 FROM album al WHERE al.artist_id = ar.artist_id) AND NOT EXISTS (SELECT 1 FROM album al JOIN track t ON t.album_id = al.album_id JOIN invoice_line il ON il.track_id = t.track_id WHERE al.artist_id = ar.artist_id)
+  tables: [album, artist, invoice_line, track]
+
+- id: p18
+  level: hard
+  language: es
+  question: "¿Cuántas playlists incluyen canciones de AC/DC?"
+  sql: |-
+    SELECT count(DISTINCT p.playlist_id) FROM playlist p JOIN playlist_track pt ON pt.playlist_id = p.playlist_id JOIN track t ON t.track_id = pt.track_id JOIN album al ON al.album_id = t.album_id JOIN artist ar ON ar.artist_id = al.artist_id WHERE ar.name = 'AC/DC'
+  tables: [album, artist, playlist, playlist_track, track]
