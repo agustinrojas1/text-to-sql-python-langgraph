@@ -6,8 +6,8 @@ read-only role, fixes its own mistakes when the query fails, and has an eval sui
 the numbers to show how well it does. The safety does not depend on the prompt: the model
 can ask for anything, and the code and the database refuse what is not a plain `SELECT`.
 
-<!-- TODO: CLI demo (asciinema or GIF) goes here once an API key is configured; embed it with ![CLI demo](docs/demo.gif) -->
-_CLI demo: pending (needs an API key to record)._
+<!-- TODO: record a CLI demo (asciinema or GIF) and embed it with ![CLI demo](docs/demo.gif) -->
+_CLI demo: not recorded yet._
 
 ## How it works
 
@@ -57,6 +57,11 @@ Not built yet: human-in-the-loop with `interrupt`, multi-turn memory
 
 Requirements: Docker, [uv](https://docs.astral.sh/uv/), Python 3.12, and a free API key
 from [Google AI Studio](https://aistudio.google.com/) (Gemini) or [Groq](https://console.groq.com/).
+Free-tier limits matter (checked 2026-10-19): `gemini-3.6-flash` and the other 3.x flash models
+allow 20 requests per day, so the default is `gemini-3.5-flash-lite`; Groq's
+`gpt-oss-120b` allows 8,000 tokens per minute and 200,000 per day. A full eval run is about
+170 LLM calls. `T2SQL_LLM_MIN_INTERVAL_S` spaces the calls to a provider (for example 7) and
+`T2SQL_LLM_MAX_RETRIES` (default 3) retries 429/503 with backoff.
 
 ```bash
 docker compose up -d                 # Postgres 16 + pgvector, Chinook loaded, read-only role created
@@ -126,7 +131,8 @@ earn", which the database does not hold).
 
 - **Execution accuracy**: the result of the generated SQL equals the result of the
   reference SQL, never the SQL text. Both go through the same guard and `LIMIT`. Rows are
-  compared as multisets (order only matters when the question implies it, e.g. top-N);
+  compared as multisets (order only matters when the question implies it, e.g. top-N, and
+  then rows tied on the sort key may come in any order);
   column names, aliases and column order are ignored (columns are matched by their
   values); numbers are rounded to 2 decimals; midnight timestamps equal dates. Extra
   columns in the generated result are accepted (headline figure); a stricter variant that
@@ -160,20 +166,79 @@ Caveat: the 100% is partly in-sample (the fix was designed after seeing which ta
 missing). On a separate 18-question probe set written beforehand (`evals/holdout.yaml`) the
 same change moved recall from 83.4% to 95.6% (61% -> 89% of questions with every table).
 
-### Results: end to end (pending an API key)
+### Results: end to end (real models, 2026-10-19)
 
-Not measured yet, deliberately left empty instead of estimated. To fill it in:
+Full dataset (50 answerable + 5 out-of-scope), one run per model, default settings (schema
+RAG with k=5 and keyword score, at most 2 repairs), temperature 0 (Gemini 3.x ignores it and uses its own sampling defaults).
+Models: `gemini-3.5-flash-lite` (Google AI Studio, free tier) and `openai/gpt-oss-20b`
+(Groq, free tier). Raw per-question results are in `evals/results/` (gitignored), the table
+below is `uv run python -m evals.run --report evals/results/full-gemini.json,evals/results/full-groq-20b.json`.
+Cost is the list price of the paid tier applied to the tokens used (the runs themselves were
+free). Latency is the end-to-end time of a question without the client-side throttle.
 
-```bash
-uv run python -m evals.run --providers gemini --sleep 5     # prints this table in markdown
-```
+| Model | Level | N | Execution accuracy | Strict* | Table recall | Full recall | Avg tables in context | First-try valid | Recovered by repair | Latency p50 / p95 | Cost / question |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| gemini/gemini-3.5-flash-lite | easy | 20 | 100% (20/20) | 100% | 100% | 100% | 6.3 | 100% | 0/0 (n/a) | 6.3s / 61.4s | $0.00061 |
+| gemini/gemini-3.5-flash-lite | medium | 20 | 100% (20/20) | 100% | 100% | 100% | 5.8 | 100% | 0/0 (n/a) | 5.0s / 9.9s | $0.00086 |
+| gemini/gemini-3.5-flash-lite | hard | 10 | 100% (10/10) | 80.0% | 100% | 100% | 5.8 | 100% | 0/0 (n/a) | 7.4s / 11.6s | $0.00112 |
+| gemini/gemini-3.5-flash-lite | **all answerable** | 50 | 100% (50/50) | 96.0% | 100% | 100% | 6.0 | 100% | 0/0 (n/a) | 5.5s / 29.9s | $0.00081 |
+| groq/openai/gpt-oss-20b | easy | 20 | 100% (20/20) | 100% | 100% | 100% | 6.3 | 100% | 0/0 (n/a) | 8.1s / 12.0s | $0.00023 |
+| groq/openai/gpt-oss-20b | medium | 20 | 90.0% (18/20) | 90.0% | 100% | 100% | 5.8 | 100% | 0/0 (n/a) | 11.6s / 16.0s | $0.00030 |
+| groq/openai/gpt-oss-20b | hard | 10 | 80.0% (8/10) | 60.0% | 100% | 100% | 5.8 | 100% | 0/0 (n/a) | 16.1s / 18.9s | $0.00041 |
+| groq/openai/gpt-oss-20b | **all answerable** | 50 | 92.0% (46/50) | 88.0% | 100% | 100% | 6.0 | 100% | 0/0 (n/a) | 10.3s / 18.0s | $0.00029 |
 
-| Model | Level | N | Execution accuracy | Table recall | First-try valid | Recovered by repair | Latency p50 / p95 | Cost / question |
-|---|---|---|---|---|---|---|---|---|
-| _pending_ | easy | 20 | _pending_ | | | | | |
-| _pending_ | medium | 20 | _pending_ | | | | | |
-| _pending_ | hard | 10 | _pending_ | | | | | |
-| _pending_ | out of scope | 5 | _pending_ (correct rejections) | | | | | |
+| Model | Out-of-scope correctly rejected | Answerable questions falsely rejected | Crashed runs |
+|---|---|---|---|
+| gemini/gemini-3.5-flash-lite | 5/5 | 0/50 | 0 |
+| groq/openai/gpt-oss-20b | 5/5 | 0/50 | 0 |
+
+*Strict = execution accuracy also requiring the same number of columns as the reference (the headline figure tolerates extra columns).
+
+**Read these numbers with care.**
+
+- The dataset is small (50 answerable questions: one question is 2 points) and it is the
+  same one the retriever vocabulary was tuned on, so 100% is a development-set figure, not a
+  claim about unseen questions.
+- The comparator and one question were adjusted after the first real runs (listed in
+  [docs/eval-findings.md](docs/eval-findings.md), section 7). Before those two changes the
+  same Gemini model scored 96.0% (48/50) on an earlier full run.
+- The repair loop is barely exercised: in the two runs above every first attempt was valid.
+  In the earlier Gemini run one query came out without its `SELECT` after a CTE, the guard
+  rejected it, and the repair fixed it (1/1 recovered); that is the only real recovery seen.
+- The Gemini p95 is dominated by three easy questions that took 38 to 71 s. Gemini's API was
+  returning `503 high demand` during the session, and the client retries with backoff, so
+  this is most likely retry time (the run does not log retries, so I cannot prove it).
+- `openai/gpt-oss-120b` (still the Groq default in `config.py`) could not be measured cleanly: the
+  free tier allows 200,000 tokens per day and the debugging runs used it up. An earlier,
+  partial-fix run gave 94.0% (47/50), but its raw file was overwritten, so it is not in the
+  table. Re-run after the quota resets:
+  `uv run python -m evals.run --providers groq --sleep 4 --out evals/results/full-groq-120b.json`.
+
+**What fails.** Gemini failed nothing in the final run (two answers carry an extra column,
+which is why strict is 96%). `gpt-oss-20b` failed 4 questions, all of them model mistakes
+and not retrieval (table recall is 100%, so the right tables were always in the prompt):
+"which artist has the most tracks" returned 100 rows instead of the top one (m05); "how many
+songs does each playlist have" used an inner join and dropped empty playlists (m06); "who
+bought in 2021 but not in 2025" lost a `DISTINCT` and returned duplicates (h06); and "who
+bought in all five years" was read as "bought in any of the five years" (h10, also the one
+`gpt-oss-120b` missed). Two more from that 120b run: a year-over-year variation that
+treated the first year as 0 instead of NULL (h02), and a month shown as a date where the
+reference uses the month number (h05, the question was reworded afterwards). Wrong
+answers here are silent: the SQL is valid and returns rows, so nothing in the repair loop
+can catch them.
+
+**Full schema instead of RAG** ([ADR 0002](docs/adr/0002-schema-rag-instead-of-full-schema.md)),
+`gemini-3.5-flash-lite`, `--retriever all` (all 11 tables in every prompt):
+
+| Retriever | Execution accuracy | Avg tables in context | Tokens / question | Cost / question |
+|---|---|---|---|---|
+| RAG (k=5 + keyword score) | 100% (50/50) | 6.0 | 1,335 | $0.00076 |
+| Full schema | 98.0% (49/50), see note | 11.0 | 1,551 | $0.00083 |
+
+Note: the one miss in the full-schema run is a `504 DEADLINE_EXCEEDED` from the API on m13
+(a crashed run, not a wrong query); re-running that single question gave a correct answer,
+so on completed questions both are 50/50. RAG saves about 14% of the tokens and about 9%
+of the cost per question here; on an 11-table schema it does not change accuracy.
 
 ### Running the evals
 
@@ -181,7 +246,8 @@ uv run python -m evals.run --providers gemini --sleep 5     # prints this table 
 uv run python -m evals.run --retrieval-only              # RAG only, no API key
 uv run python -m evals.run --fake                        # oracle "LLM" that returns the reference SQL: checks the harness (expects 100%)
 uv run python -m evals.run --providers gemini,groq       # one separate run per provider, a model column in the table
-uv run python -m evals.run --providers groq --model openai/gpt-oss-20b --level easy --limit 10
+uv run python -m evals.run --report a.json,b.json        # one combined table from earlier result files
+T2SQL_GROQ_MODEL=openai/gpt-oss-20b uv run python -m evals.run --providers groq --level easy --limit 10
 ```
 
 Other options: `--ids e01,m09`, `--level easy,hard`, `--limit N`, `--sleep SECONDS` (default 2
@@ -224,8 +290,8 @@ tests/
 ## Testing
 
 ```bash
-uv run pytest                    # 373 tests
-uv run pytest -m "not integration"   # 283 tests, no database needed
+uv run pytest                    # 379 tests
+uv run pytest -m "not integration"   # 289 tests, no database needed
 ```
 
 Tests marked `integration` need `docker compose up -d` and are skipped automatically if

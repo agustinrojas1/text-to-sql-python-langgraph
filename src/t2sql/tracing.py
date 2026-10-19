@@ -5,14 +5,18 @@ from pathlib import Path
 from typing import Any
 
 # USD per 1M tokens (input, output). Standard paid-tier list prices, checked 2026-10-17:
+# - gemini-3.5-flash-lite: $0.30 / $2.50 (same page, checked 2026-10-19).
 # - gemini-3.6-flash: https://ai.google.dev/gemini-api/docs/pricing  ($0.75 / $3.75 until
 #   2026-12-31, then $1.50 / $7.50). Used even when running on the free tier ("would cost").
+# - openai/gpt-oss-20b on Groq: https://console.groq.com/docs/model/openai/gpt-oss-20b ($0.075 / $0.30, checked 2026-10-19).
 # - openai/gpt-oss-120b on Groq: https://console.groq.com/docs/model/openai/gpt-oss-120b
 # - claude-haiku-5-5: https://platform.claude.com/docs/en/about-claude/pricing
 #   (prompts up to 100k tokens; above that it is $0.50 / $2.50, not modelled).
 MODEL_PRICES: dict[str, tuple[float, float]] = {
+    "gemini-3.5-flash-lite": (0.30, 2.50),
     "gemini-3.6-flash": (0.75, 3.75),
     "openai/gpt-oss-120b": (0.15, 0.60),
+    "openai/gpt-oss-20b": (0.075, 0.30),
     "claude-haiku-5-5": (0.10, 0.50),
 }
 

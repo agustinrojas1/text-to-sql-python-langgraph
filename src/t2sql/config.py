@@ -53,12 +53,17 @@ class Settings(BaseSettings):
     # LLM providers, tried in order; those without an API key are skipped.
     # T2SQL_LLM_PROVIDERS accepts a comma-separated list ("gemini,groq").
     llm_providers: Annotated[list[str], NoDecode] = ["gemini", "groq"]
-    gemini_model: str = "gemini-3.6-flash"
+    # gemini-3.6-flash (and the other 3.x flash models) allow only 20 free-tier requests per day
+    # (checked 2026-10-19), not enough for even one eval run; flash-lite does the full dataset.
+    gemini_model: str = "gemini-3.5-flash-lite"
     groq_model: str = "openai/gpt-oss-120b"
     anthropic_model: str = "claude-haiku-5-5"
     llm_timeout_s: float = 30
-    llm_max_retries: int = 1  # per provider, before falling over to the next one
+    llm_max_retries: int = 3  # per provider (429/503 backoff), before falling over to the next one
     llm_temperature: float = 0
+    # Minimum seconds between two calls to the same provider (0 = no throttle). For free tiers:
+    # 5 requests/minute needs 12.
+    llm_min_interval_s: float = 0
     # Keys use the providers' standard variable names (no T2SQL_ prefix needed).
     google_api_key: str | None = Field(
         None, validation_alias=AliasChoices("T2SQL_GOOGLE_API_KEY", "GOOGLE_API_KEY")

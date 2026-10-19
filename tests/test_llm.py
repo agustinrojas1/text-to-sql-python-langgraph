@@ -62,6 +62,40 @@ def test_adapter_unparsed_output_raises():
         ChatModelLLM("p", "m", StubChat(parsed=None)).structured(MSGS, Out)
 
 
+def test_adapter_retries_unparsed_output_and_sums_tokens():
+    chat = StubChat(parsed=None)
+    calls = []
+    orig = chat.with_structured_output
+
+    def flaky(schema, **kw):
+        inner = orig(schema, **kw).invoke
+
+        def invoke(m):
+            calls.append(1)
+            chat.parsed = Out(x=5) if len(calls) == 2 else None
+            return inner(m)
+
+        return SimpleNamespace(invoke=invoke)
+
+    chat.with_structured_output = flaky
+    r = ChatModelLLM("p", "m", chat).structured(MSGS, Out)
+    assert r.output == Out(x=5) and len(calls) == 2
+    assert (r.input_tokens, r.output_tokens) == (14, 6)  # the discarded attempt is paid for too
+
+
+def test_adapter_gives_up_after_parse_retries():
+    with pytest.raises(ValueError):
+        ChatModelLLM("p", "m", StubChat(parsed=None), parse_retries=1).structured(MSGS, Out)
+
+
+def test_throttle_spaces_calls_and_reports_wait():
+    llm = ChatModelLLM("p", "m", StubChat(parsed=Out(x=1)), min_interval_s=0.05)
+    first = llm.structured(MSGS, Out)
+    second = llm.structured(MSGS, Out)
+    assert first.waited_ms == 0
+    assert 20 < second.waited_ms < 500
+
+
 def test_fallback_to_second_provider():
     first = ChatModelLLM("a", "ma", StubChat(error=RuntimeError("429 rate limit"), parsed=Out(x=0)))
     second = ChatModelLLM("b", "mb", StubChat(parsed=Out(x=2), text="ok"))

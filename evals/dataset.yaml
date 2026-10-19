@@ -404,7 +404,7 @@
 - id: h05
   level: hard
   language: en
-  question: "Show the cumulative revenue month by month during 2024."
+  question: "Show the cumulative revenue month by month during 2024, identifying each month by its number (1-12)."
   sql: |-
     WITH monthly AS (
       SELECT EXTRACT(MONTH FROM invoice_date)::int AS month, sum(total) AS revenue

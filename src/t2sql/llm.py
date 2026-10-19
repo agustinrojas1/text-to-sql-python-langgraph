@@ -32,6 +32,8 @@ class LLMResult[T]:
     input_tokens: int | None = None
     output_tokens: int | None = None
     latency_ms: float = 0.0
+    # Time spent in our own client-side throttle (ms); excluded from the traced latency.
+    waited_ms: float = 0.0
 
     @property
     def meta(self) -> dict[str, Any]:
@@ -65,6 +67,10 @@ def _tokens(msg: Any) -> tuple[int | None, int | None]:
     return usage.get("input_tokens"), usage.get("output_tokens")
 
 
+def _add(a: int | None, b: int | None) -> int | None:
+    return None if a is None and b is None else (a or 0) + (b or 0)
+
+
 def _text_of(msg: AIMessage) -> str:
     content = msg.content
     if isinstance(content, str):
@@ -84,30 +90,59 @@ class ChatModelLLM:
         model_name: str,
         chat: BaseChatModel,
         structured_kwargs: dict[str, Any] | None = None,
+        min_interval_s: float = 0.0,
+        parse_retries: int = 2,
     ) -> None:
         self.provider = provider
         self.model_name = model_name
         self._chat = chat
         self._structured_kwargs = structured_kwargs or {}
+        # Free tiers cap requests per minute (e.g. 5 RPM): space the calls instead of failing.
+        self._min_interval_s = min_interval_s
+        self._last_call = float("-inf")
+        self._parse_retries = parse_retries
+
+    def _throttle(self) -> float:
+        """Sleep until `min_interval_s` has passed since the last call; returns ms waited."""
+        wait = max(0.0, self._last_call + self._min_interval_s - time.monotonic())
+        if wait > 0:
+            time.sleep(wait)
+        self._last_call = time.monotonic()
+        return wait * 1000
 
     def structured[S: BaseModel](self, messages: list[Message], schema: type[S]) -> LLMResult[S]:
         runnable = self._chat.with_structured_output(
             schema, include_raw=True, **self._structured_kwargs
         )
-        start = time.perf_counter()
-        out = runnable.invoke(_to_lc(messages))
-        latency = (time.perf_counter() - start) * 1000
-        if out.get("parsed") is None:
-            raise ValueError(f"{self.provider}: could not parse structured output: {out.get('parsing_error')}")
-        tin, tout = _tokens(out.get("raw"))
-        return LLMResult(out["parsed"], self.provider, self.model_name, tin, tout, latency)
+        lc_messages = _to_lc(messages)
+        tin_total: int | None = None
+        tout_total: int | None = None
+        latency = waited = 0.0
+        out: dict[str, Any] = {}
+        # Some models now and then answer with the JSON schema itself, or malformed JSON, instead
+        # of an instance of it (seen with gpt-oss on Groq). One more try almost always fixes it;
+        # tokens, latency and waiting of the discarded attempts are counted.
+        for _ in range(1 + self._parse_retries):
+            waited += self._throttle()
+            start = time.perf_counter()
+            out = runnable.invoke(lc_messages)
+            latency += (time.perf_counter() - start) * 1000
+            tin, tout = _tokens(out.get("raw"))
+            tin_total = _add(tin_total, tin)
+            tout_total = _add(tout_total, tout)
+            if out.get("parsed") is not None:
+                return LLMResult(
+                    out["parsed"], self.provider, self.model_name, tin_total, tout_total, latency, waited
+                )
+        raise ValueError(f"{self.provider}: could not parse structured output: {out.get('parsing_error')}")
 
     def text(self, messages: list[Message]) -> LLMResult[str]:
+        waited = self._throttle()
         start = time.perf_counter()
         msg = self._chat.invoke(_to_lc(messages))
         latency = (time.perf_counter() - start) * 1000
         tin, tout = _tokens(msg)
-        return LLMResult(_text_of(msg).strip(), self.provider, self.model_name, tin, tout, latency)
+        return LLMResult(_text_of(msg).strip(), self.provider, self.model_name, tin, tout, latency, waited)
 
 
 class FallbackLLM:
@@ -148,7 +183,7 @@ def _make_gemini(s: Settings) -> ChatModelLLM:
         timeout=s.llm_timeout_s,
         retries=s.llm_max_retries,
     )
-    return ChatModelLLM("gemini", s.gemini_model, chat)
+    return ChatModelLLM("gemini", s.gemini_model, chat, min_interval_s=s.llm_min_interval_s)
 
 
 def _make_groq(s: Settings) -> ChatModelLLM:
@@ -162,7 +197,9 @@ def _make_groq(s: Settings) -> ChatModelLLM:
         max_retries=s.llm_max_retries,
     )
     # json_schema mode is the one Groq supports natively (gpt-oss models).
-    return ChatModelLLM("groq", s.groq_model, chat, {"method": "json_schema"})
+    return ChatModelLLM(
+        "groq", s.groq_model, chat, {"method": "json_schema"}, min_interval_s=s.llm_min_interval_s
+    )
 
 
 def _make_anthropic(s: Settings) -> ChatModelLLM:
@@ -175,7 +212,7 @@ def _make_anthropic(s: Settings) -> ChatModelLLM:
         timeout=s.llm_timeout_s,
         max_retries=s.llm_max_retries,
     )
-    return ChatModelLLM("anthropic", s.anthropic_model, chat)
+    return ChatModelLLM("anthropic", s.anthropic_model, chat, min_interval_s=s.llm_min_interval_s)
 
 
 # provider name -> (settings attribute with the API key, factory)

@@ -3,7 +3,7 @@
 This is the story of the first thing the evals found, how it was measured, what was tried
 and what actually helped. Everything below that mentions retrieval was produced without
 any LLM key (`uv run python -m evals.run --retrieval-only`); end-to-end numbers (execution
-accuracy, repair, cost) are still pending an API key and are not mentioned here.
+accuracy, repair, cost) come in section 7, added on 2026-10-19 after the first real runs.
 
 ## 1. The symptom
 
@@ -164,3 +164,95 @@ uv run python -m evals.run --retrieval-only --index-table schema_docs_kw --top-k
 ```
 The index (`t2sql_meta.schema_docs`) is the same for before and after: the fix changes
 scoring, not what is stored.
+
+
+## 7. End to end with real models (2026-10-19)
+
+First runs against real APIs. Everything here is from runs I executed that day; the final
+tables are in the README. Models: `gemini-3.5-flash-lite` and `openai/gpt-oss-20b` (plus
+partial data on `openai/gpt-oss-120b`).
+
+### What broke before any accuracy could be measured
+
+| Problem | Evidence | Fix |
+|---|---|---|
+| Free-tier quota, Gemini | `gemini-3.6-flash` (the old default): 429 `GenerateRequestsPerDayPerProjectPerModel`, limit 20 per day, hit after about 20 calls; 5 per minute too. Other 3.x flash models list the same 20. | Default changed to `gemini-3.5-flash-lite`, which completed three full runs in a day (about 170 calls each). `T2SQL_LLM_MIN_INTERVAL_S` throttles calls per provider (7 s used). |
+| Gemini 503 "high demand" / 504 | crashed questions in the first quick run; one 504 in the full-schema run | `llm_max_retries` default 1 -> 3 (backoff in the client) |
+| Groq 429 on tokens per minute (limit 8,000) | 9 of 55 questions crashed in the first full run | same retries (the message says "try again in 764 ms") |
+| Groq structured output returns the schema, not an instance | 3 crashes: `Failed to parse GeneratedSql from completion {"description": "", "properties": ...}` | `ChatModelLLM.structured` retries up to 2 more times on unparsed output, summing the tokens of the discarded attempts |
+| Groq 200,000 tokens per day | 47 of 55 questions crashed in a third full run in one day | not fixable in code; documented, `gpt-oss-120b` re-run pending |
+| Throttle sleep counted as latency | p50 of 31 s for an easy question | `LLMResult.waited_ms`, subtracted from the traced latency |
+| Cost `n/a` | new model without a price | prices added to `tracing.py` (checked on the providers' pages) |
+
+The pre-fix run on `gpt-oss-120b` scored 78.0% (39/50), but 9 of the 11 misses were
+crashes from the first three rows above, not wrong SQL. Reporting that number as the model's
+accuracy would have been wrong in the other direction; the harness separates "crashed" from
+"wrong" for that reason.
+
+### Two things that were the harness, not the model
+
+I changed these after seeing results, so they are listed explicitly:
+
+1. **Comparator, ties in ordered results (e16).** "Total billed per country, highest
+   first". Seven countries tie at 37.62, and the reference breaks ties by country name.
+   The question does not ask for that, and both models returned the right totals in the
+   right order with the tied countries in another order. `compare.py` now accepts a
+   different order among rows that tie on a sort key of the reference (still requires the
+   same key sequence and the same rows inside each tie group; tests added, including that
+   a reversed or displaced order still fails). Without the change Gemini and gpt-oss-120b both
+   failed e16.
+2. **Question wording, h05.** "Cumulative revenue month by month during 2024". The reference
+   returns the month number (1 to 12); both models returned the month as a date
+   (`2024-01-01`) or text. Neither is wrong. Changed the question to "..., identifying each
+   month by its number (1-12)." The SQL reference is unchanged. After the change Gemini passed
+   (strict-only: it added a monthly revenue column). This is a dataset edit after seeing the
+   result; before it the Gemini full run was 96.0% (48/50) with these two failures and nothing
+   else.
+
+No other reference SQL or question was changed. h02 and h10 below look like candidates and
+I left them: the reference reading is the natural one.
+
+### Remaining failures
+
+All table recall 100%; none is a retrieval problem. Classification:
+
+| Model | Question | Cause |
+|---|---|---|
+| gpt-oss-20b | m05 artist with most tracks | wrong interpretation: asked for "the" artist, returned 100 rows (no `LIMIT 1`) |
+| gpt-oss-20b | m06 songs per playlist | wrong join: inner join drops empty playlists, the reference counts them as 0 ("each playlist") |
+| gpt-oss-20b | h06 bought in 2021, not in 2025 | missing `DISTINCT`: one row per 2021 invoice |
+| gpt-oss-20b, gpt-oss-120b | h10 bought in all five years | wrong interpretation: "any invoice in the range" instead of "in each of the five years" |
+| gpt-oss-120b (earlier run) | h02 year-over-year variation | `COALESCE(prev, 0)`: the first year shows its whole total as variation instead of NULL |
+
+Gemini flash-lite has no failure in the final run. The h10 error is the same in two
+different models, which makes it look like a hard question ("in all five years" needs
+`HAVING count(DISTINCT year) = 5`) and not a flaw in the reference.
+
+### The repair loop, in practice
+
+In the final runs every first attempt was valid, so repair was never needed. In an earlier
+Gemini run (before the comparator change) the one first-try failure was h09: the model wrote
+a CTE and then forgot the `SELECT` keyword; sqlglot rejected it (`parse_error: column does
+not support CTE`), the repair prompt returned the error, and the second attempt was correct.
+One recovery in one occurrence: the loop works, but this evaluation says almost nothing
+about how well. A harder or noisier benchmark would be needed. And the failures that do
+happen are the silent kind: valid SQL, rows returned, wrong meaning. The loop only sees
+errors and empty results (ADR 0003).
+
+### Full schema versus RAG
+
+Gemini flash-lite with all 11 tables in every prompt: 49/50 (the miss is a 504 timeout; the
+same question re-run was correct) against 50/50 with RAG. Tokens per question 1,551 versus
+1,335 (RAG 14% fewer), cost per question $0.00083 versus $0.00076. The retrieval work
+(section 2 to 5) was needed to make RAG not lose tables, but on this schema it is not
+needed to answer correctly. Its benefit is cost and scaling, not accuracy.
+
+### Caveats
+
+- 50 questions, two models, one run each, temperature 0 where honoured. One question is 2
+  points; I did not repeat runs, so run-to-run noise is unmeasured.
+- The dataset and the keyword vocabulary were written by the same person, and the harness
+  fixes above were made after seeing results.
+- Free-tier throttling and provider outages affect latency numbers (Gemini p95), and
+  `gpt-oss-120b` has no clean full run.
+- Cost uses list prices applied to tokens from free-tier runs.

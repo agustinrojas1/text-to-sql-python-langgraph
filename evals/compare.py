@@ -13,7 +13,11 @@ the README, "Evals"):
   of the reference exactly (a small backtracking search, so "name, count" vs
   "count, name" matches but a wrong pairing does not).
 * Rows are compared as multisets (order-insensitive) unless the item has
-  `order_matters`, in which case the sequence of rows must be identical.
+  `order_matters`, in which case the sequence of rows must be identical, except that rows
+  tied on a sort key may come in any order (the question rarely says how to break ties, so
+  the reference's tie-break is arbitrary). A sort key is a reference column the reference
+  rows are monotone in; the generated sequence must have the same key values in the same
+  order and the same set of rows inside every group of equal key values.
 * Lenient headline rule: the generated result may have EXTRA columns (e.g. an id the
   question did not ask for) as long as some subset of its columns reproduces the
   reference result. `strict` additionally requires the same number of columns; both
@@ -73,6 +77,30 @@ def to_tuples(columns: list[str], rows: list[dict[str, Any]]) -> list[tuple]:
     return [tuple(normalize_value(r[c]) for c in columns) for r in rows]
 
 
+def _tie_equivalent(ref: list[tuple], gen: list[tuple]) -> bool:
+    """`gen` equals `ref` up to reordering rows that tie on some sort key of `ref`."""
+    for k in range(len(ref[0])):
+        keys = [r[k] for r in ref]
+        try:
+            monotone = all(a <= b for a, b in itertools.pairwise(keys)) or all(
+                a >= b for a, b in itertools.pairwise(keys)
+            )
+        except TypeError:  # NULLs or mixed types: not a usable sort key
+            continue
+        if not monotone or [g[k] for g in gen] != keys:
+            continue
+        # Same key sequence; compare the rows of each run of equal keys as multisets.
+        start = 0
+        for end in range(1, len(ref) + 1):
+            if end == len(ref) or keys[end] != keys[start]:
+                if Counter(ref[start:end]) != Counter(gen[start:end]):
+                    break
+                start = end
+        else:
+            return True
+    return False
+
+
 def compare_results(
     ref_columns: list[str],
     ref_rows: list[dict[str, Any]],
@@ -110,6 +138,8 @@ def compare_results(
         if tried > MAX_ASSIGNMENTS:
             break
         projected = [tuple(r[i] for i in assignment) for r in gen]
-        if (projected if order_matters else Counter(projected)) == ref_cmp:
+        if (projected if order_matters else Counter(projected)) == ref_cmp or (
+            order_matters and _tie_equivalent(ref, projected)
+        ):
             return Comparison(True, n_gen == n_ref, "")
     return Comparison(False, False, "values match per column but rows differ (wrong pairing or order)")

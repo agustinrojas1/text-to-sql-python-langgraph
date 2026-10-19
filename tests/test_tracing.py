@@ -72,3 +72,17 @@ def test_trace_file_appends_json_lines(tmp_path):
     append_trace_file(str(f), "q2", state)
     lines = [json.loads(line) for line in f.read_text().splitlines()]
     assert [r["question"] for r in lines] == ["q1", "q2"] and lines[0]["summary"] == {"attempts": 1}
+
+
+def test_traced_latency_excludes_throttle_wait():
+    import time
+
+    from t2sql.llm import LLMResult
+    from t2sql.nodes.common import traced
+
+    @traced("slow")
+    def slow(state):
+        time.sleep(0.06)  # 60 ms in the node, 50 of them waiting for the client-side throttle
+        return {"_llm": LLMResult("x", "p", "m", 1, 1, 5.0, waited_ms=50.0)}
+
+    assert 0 <= slow({})["trace"][0]["latency_ms"] < 40

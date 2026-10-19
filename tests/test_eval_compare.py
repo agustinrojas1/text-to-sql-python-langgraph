@@ -77,3 +77,18 @@ def test_duplicate_valued_columns_still_match():
 def test_nulls_compare_equal_and_empty_results_match():
     assert cmp((["a"], [(None,), (1,)]), (["b"], [(1,), (None,)])).match
     assert cmp((["a"], []), (["b"], [])).match
+
+
+def test_ordered_comparison_tolerates_reordering_inside_ties():
+    cols = ["country", "total"]
+    ref = (cols, [("USA", 523.06), ("Canada", 303.96), ("Chile", 37.62), ("Spain", 37.62), ("Italy", 37.62)])
+    # Same order by total, different tie-break among the 37.62 rows: fine.
+    tie = (cols, [("USA", 523.06), ("Canada", 303.96), ("Spain", 37.62), ("Italy", 37.62), ("Chile", 37.62)])
+    assert cmp(ref, tie, order=True).match
+    # Wrong direction or a displaced non-tied row is still wrong.
+    asc = (cols, list(reversed(ref[1])))
+    assert not cmp(ref, asc, order=True).match
+    swapped = (cols, [("Canada", 303.96), ("USA", 523.06), ("Chile", 37.62), ("Spain", 37.62), ("Italy", 37.62)])
+    assert not cmp(ref, swapped, order=True).match
+    # Without order_matters nothing changes.
+    assert cmp(ref, asc).match

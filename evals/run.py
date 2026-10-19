@@ -401,7 +401,8 @@ def run_agent(runs: list[Run], items: list[Item], settings: Settings, sleep_s: f
             rec = evaluate_item(run.graph, item, refs.get(item.id), settings)
             recs.append(rec)
             verdict = "crashed" if "crashed" in rec else ("ok" if rec.get("exec_match") or rec.get("correct_rejection") else "FAIL")
-            log(f"[{run.label}] {n}/{len(items)} {item.id} {verdict}")
+            note = f": {rec['crashed'][:200]}" if "crashed" in rec else ""
+            log(f"[{run.label}] {n}/{len(items)} {item.id} {verdict}{note}")
             if sleep_s and n < len(items):
                 time.sleep(sleep_s)
     return out
@@ -423,7 +424,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--top-k", type=int, help="override T2SQL_RETRIEVAL_TOP_K")
     p.add_argument("--sleep", type=float, help="seconds between questions (default 2 with a real LLM, else 0)")
     p.add_argument("--out", help="raw results JSON (default: evals/results/<timestamp>-<mode>.json)")
+    p.add_argument("--report", help="comma-separated result JSONs of earlier agent runs: print one combined table and exit")
     args = p.parse_args(argv)
+
+    if args.report:
+        merged: dict[str, list[dict[str, Any]]] = {}
+        for f in args.report.split(","):
+            merged.update(json.loads(Path(f).read_text(encoding="utf-8"))["results"])
+        print(agent_markdown(merged))
+        return 0
 
     settings = get_settings()
     updates: dict[str, Any] = {}

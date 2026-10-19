@@ -45,10 +45,13 @@ model.
   18-question held-out probe set written before the fix: 83.4% (61%) to 95.6% (89%). The
   dataset figure is partly in-sample; the held-out one is the honest estimate. Details,
   failures that remain and the variants that did not help are in `docs/eval-findings.md`.
-- With 11 tables the saving is modest (about 45% fewer tables than the full schema), and
-  a full-schema baseline (`T2SQL_RETRIEVER=all`) is one setting away for comparison once
-  an LLM key is available. The design pays off only on bigger schemas; here it is mostly a
-  measured, testable component.
+- With 11 tables the saving is modest (about 45% fewer tables than the full schema). The
+  full-schema baseline was run on 2026-10-19 with `gemini-3.5-flash-lite`
+  (`--retriever all`): 49/50 correct plus one API timeout that was correct when re-run, versus
+  50/50 with RAG, i.e. no accuracy difference on this schema, and 1,551 versus 1,335 tokens per
+  question (RAG saves about 14% of the tokens, 9% of the cost). One model, one run, one
+  schema: the honest reading is that RAG is not needed for accuracy here. The design pays
+  off only on bigger schemas; here it is mostly a measured, testable component.
 - The keyword vocabulary is hand-written per schema (and in two languages). It is cheap but
   it is maintenance, and it can overfit the questions its author has in mind.
 - A model download (about 220 MB) happens on the first `t2sql index` or question.

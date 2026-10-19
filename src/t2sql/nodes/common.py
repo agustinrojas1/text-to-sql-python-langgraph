@@ -31,7 +31,7 @@ def traced(name: str, deps: Deps | None = None) -> Callable[[Node], Node]:
             entry: dict[str, Any] = {
                 "node": name,
                 "attempt": update.get("attempts", state.get("attempts", 0)),
-                "latency_ms": round((time.perf_counter() - start) * 1000, 1),
+                "latency_ms": round((time.perf_counter() - start) * 1000 - (llm.waited_ms if llm else 0), 1),
                 "llm": meta,
                 "cost_usd": compute_cost(
                     meta["model"], meta["input_tokens"], meta["output_tokens"], overrides

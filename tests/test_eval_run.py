@@ -117,3 +117,16 @@ def test_select_items_filters():
     assert [i.id for i in ev.select_items(ITEMS, A())] == ["h01", "h02", "h03"]
     A.ids, A.level, A.limit = "e01,o01", None, None
     assert [i.id for i in ev.select_items(ITEMS, A())] == ["e01", "o01"]
+
+
+def test_report_merges_result_files(tmp_path, capsys):
+    import json
+
+    from evals.run import main
+
+    rec = {"id": "e01", "level": "easy", "language": "en", "question": "q", "exec_match": True, "exec_strict": True}
+    for name in ("a", "b"):
+        (tmp_path / f"{name}.json").write_text(json.dumps({"results": {f"p/{name}": [rec]}}))
+    assert main(["--report", f"{tmp_path}/a.json,{tmp_path}/b.json"]) == 0
+    out = capsys.readouterr().out
+    assert "p/a" in out and "p/b" in out
