@@ -16,6 +16,7 @@ from langgraph.graph.state import CompiledStateGraph
 from t2sql.config import Settings, get_settings
 from t2sql.db import execute_readonly
 from t2sql.llm import LLM
+from t2sql.local_classifier import ScopeScorer, build_scorer
 from t2sql.nodes.classify import make_classify, make_respond_out_of_scope, route_after_classify
 from t2sql.nodes.execute import make_execute
 from t2sql.nodes.generate import make_generate_sql
@@ -50,6 +51,7 @@ def build_graph(
     retriever: SchemaRetriever | None = None,
     settings: Settings | None = None,
     executor: Executor | None = None,
+    scorer: ScopeScorer | None = None,
 ) -> CompiledStateGraph:
     settings = settings or get_settings()
     deps = Deps(
@@ -57,6 +59,7 @@ def build_graph(
         retriever=retriever or default_retriever(settings),
         settings=settings,
         executor=executor or (lambda sql: execute_readonly(sql, settings)),
+        scorer=scorer or build_scorer(settings),
     )
 
     g = StateGraph(AgentState)
@@ -112,7 +115,16 @@ def node_event(node: str, update: dict[str, Any]) -> dict[str, Any]:
     details = entry.get("details") or {}
     err = update.get("error")
     if node == "classify":
-        data = {"in_scope": update["in_scope"], "language": update["language"], "reason": update["scope_reason"]}
+        data = {
+            "in_scope": update["in_scope"],
+            "language": update["language"],
+            "reason": update["scope_reason"],
+            "decided_by": details.get("decided_by", "llm"),  # "local" | "llm"
+            "p_in": details.get("p_in"),  # local model's P(in scope), if it was asked
+            "local_ms": details.get("local_ms"),
+            "local_model": details.get("local_model"),
+            "local_unavailable": bool(details.get("local_unavailable")),
+        }
     elif node == "retrieve_schema":
         scores = details.get("scores") or {}
         data = {

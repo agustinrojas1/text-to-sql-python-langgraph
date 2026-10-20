@@ -1,5 +1,5 @@
 from t2sql import prompts
-from t2sql.nodes.common import Node, traced
+from t2sql.nodes.common import Node, emit_prompt, traced
 from t2sql.state import AgentState, Deps
 
 # The user sees the full table; the LLM only needs a sample plus the total count to summarize.
@@ -13,6 +13,7 @@ def make_respond(deps: Deps) -> Node:
         msgs = prompts.respond_messages(
             state["question"], state["sql"], state["columns"], rows[:MAX_ROWS_FOR_LLM], len(rows)
         )
+        emit_prompt("respond", state.get("attempts", 0), msgs)
         res = deps.llm.text(msgs)
         return {"answer": res.output, "_llm": res}
 

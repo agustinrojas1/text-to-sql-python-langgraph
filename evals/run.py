@@ -119,6 +119,7 @@ def evaluate_item(
         return rec
 
     summary = state["summary"]
+    classify_details = next((e["details"] or {} for e in state["trace"] if e["node"] == "classify"), {})
     rejected = not state.get("in_scope", True)
     rec.update(
         rejected=rejected,
@@ -127,6 +128,8 @@ def evaluate_item(
         answer=state.get("answer"),
         candidate_tables=state.get("candidate_tables"),
         path=[e["node"] for e in state["trace"]],
+        classified_by=classify_details.get("decided_by"),
+        local_p_in=classify_details.get("p_in"),
         attempt_history=state.get("attempt_history", []),
         summary=summary,
         model=next((e["llm"]["provider"] + "/" + e["llm"]["model"] for e in state["trace"] if e["llm"]), None),
@@ -205,6 +208,8 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
       false_rejection      in-scope questions rejected / n_in_scope
       latency p50/p95      end-to-end graph time (sum of node latencies, excluding --sleep), all
                            questions that did not crash
+      decided_locally      share of questions whose scope was decided by the local classifier
+                           (no cloud call for classify); cloud_calls_per_question = mean LLM calls
       cost_per_question    mean USD over questions with a priced model (None if unpriced / fake)
     """
     ins = [r for r in records if r["level"] != "out_of_scope"]
@@ -232,6 +237,9 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         "correct_rejections": sum(r.get("correct_rejection", False) for r in oos),
         "false_rejections": sum(bool(r.get("rejected")) for r in ins),
         "latency_p50_s": percentile(lat, 50), "latency_p95_s": percentile(lat, 95),
+        "decided_locally": _ratio(sum(r.get("classified_by") == "local" for r in ok), len(ok)),
+        "n_decided_locally": sum(r.get("classified_by") == "local" for r in ok),
+        "cloud_calls_per_question": _mean([r["summary"]["llm_calls"] for r in ok if "llm_calls" in r["summary"]]),
         "cost_per_question": _mean(costs), "n_priced": len(costs),
         "tokens_per_question": _mean([r["summary"]["input_tokens"] + r["summary"]["output_tokens"] for r in ok]),
     }  # fmt: skip
@@ -288,6 +296,15 @@ def agent_markdown(runs: dict[str, list[dict[str, Any]]]) -> str:
         scope.append(
             f"| {model} | {a['correct_rejections']}/{a['n_out_of_scope']} | {a['false_rejections']}/{a['n_in_scope']} | {a['crashed']} |"
         )
+    if any(r.get("local_p_in") is not None or r.get("classified_by") == "local" for recs in runs.values() for r in recs):
+        scope += ["", "| Model | Scope decided locally | Scope sent to the cloud LLM | Cloud LLM calls / question |", "|---|---|---|---|"]
+        for model, recs in runs.items():
+            a = aggregate(recs)
+            done = sum("summary" in r for r in recs)
+            scope.append(
+                f"| {model} | {a['n_decided_locally']}/{done} ({_pct(a['decided_locally'])}) "
+                f"| {done - a['n_decided_locally']}/{done} | {_num(a['cloud_calls_per_question'], '.2f')} |"
+            )
     note = (
         "\n*Strict = execution accuracy also requiring the same number of columns as the reference "
         "(the headline figure tolerates extra columns)."
@@ -418,6 +435,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--model", help="model id override (needs exactly one provider)")
     p.add_argument("--retrieval-only", action="store_true", help="only the retriever; no LLM and no API key needed")
     p.add_argument("--fake", action="store_true", help="oracle LLM that returns the reference SQL (harness smoke test)")
+    p.add_argument("--classifier", choices=["llm", "local", "cascade"], help="override T2SQL_CLASSIFIER (local/cascade need a llama-server, see README)")
     p.add_argument("--retriever", choices=["auto", "pgvector", "all"], help="override T2SQL_RETRIEVER")
     p.add_argument("--index-table", help="pgvector index table in t2sql_meta (default: schema_docs)")
     p.add_argument("--lexical-weight", type=float, help="override T2SQL_RETRIEVAL_LEXICAL_WEIGHT")
@@ -436,6 +454,8 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = get_settings()
     updates: dict[str, Any] = {}
+    if args.classifier:
+        updates["classifier"] = args.classifier
     if args.retriever:
         updates["retriever"] = args.retriever
     if args.lexical_weight is not None:
@@ -455,6 +475,8 @@ def main(argv: list[str] | None = None) -> int:
         "timestamp": datetime.now().isoformat(timespec="seconds"), "mode": mode, "dataset": args.dataset,
         "n_items": len(items), "retriever": settings.retriever, "top_k": settings.retrieval_top_k, "lexical_weight": settings.retrieval_lexical_weight,
         "embedding_model": settings.embedding_model, "index_table": args.index_table or "schema_docs", "max_repairs": settings.max_repairs,
+        "classifier": settings.classifier,
+        **({"local_classifier": [settings.local_classifier_model, settings.cascade_low, settings.cascade_high, settings.local_threshold]} if settings.classifier != "llm" else {}),
     }  # fmt: skip
 
     try:

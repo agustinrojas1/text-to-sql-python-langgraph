@@ -2,6 +2,8 @@ from t2sql.db import QueryError
 from t2sql.nodes.common import Node, traced
 from t2sql.state import AgentState, Deps
 
+SAMPLE_ROWS = 3  # rows echoed in the trace / stream; the full result is in the final event
+
 
 def make_execute(deps: Deps) -> Node:
     @traced("execute", deps)
@@ -20,7 +22,11 @@ def make_execute(deps: Deps) -> Node:
             "rows": result.rows,
             "error": None,
             "error_kind": None,
-            "_details": {"row_count": result.row_count},
+            "_details": {
+                "row_count": result.row_count,
+                "columns": result.columns,
+                "sample": result.rows[:SAMPLE_ROWS],
+            },
         }
 
     return execute

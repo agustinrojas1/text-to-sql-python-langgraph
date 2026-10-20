@@ -145,6 +145,111 @@ with the latency of each step and an expandable detail (SQL, retrieval scores, t
 cost). When it finishes it shows the answer, the result table, the SQL and the run totals.
 Each question is independent: there is no conversation memory.
 
+## Optional local classifier (cascade)
+
+By default the cloud LLM decides whether a question is about the database (`classify`). An
+optional small model running locally can take about half of those decisions: it returns
+P(in scope) in roughly 300 ms on a consumer GPU (two forward passes of about 150 ms), spends
+no tokens or quota, and in the benchmark below the cascade settled 53% of the test questions
+on its own with the same scope accuracy as the cloud LLM alone (see
+[ADR 0005](docs/adr/0005-local-system1-classifier-cascade.md); the full story of how the model was chosen is in [docs/system1-classifier-study.md](docs/system1-classifier-study.md)). It is off unless you set
+`T2SQL_CLASSIFIER`:
+
+| `T2SQL_CLASSIFIER` | Behavior |
+|---|---|
+| `llm` (default) | The cloud LLM decides, as before. Nothing else is needed. |
+| `local` | The local model decides alone: in scope if P >= `T2SQL_LOCAL_THRESHOLD` (0.5). |
+| `cascade` | P < `T2SQL_CASCADE_LOW` is out of scope, P > `T2SQL_CASCADE_HIGH` is in scope (both decided locally); in between, the cloud LLM decides. |
+
+If the local server is down or answers badly, `local` and `cascade` fall back to the cloud
+LLM (one warning in the log per outage); a request never fails because of it. The language
+of a locally decided question (needed for the refusal message) comes from a small
+heuristic (`detect_language`: `¿ ¡ ñ` and English/Spanish function words, including
+rioplatense forms such as "tenés" or "mostrame").
+
+Two models are supported, both GGUF files served by llama.cpp's `llama-server`
+(`T2SQL_LOCAL_CLASSIFIER_MODEL`). The default and the recommended one is `tev1`:
+
+- `tev1`: Tev1-4B-experimental, queried through `/completion`. P(in scope) is the
+  probability of the option letter A against B, averaged over two requests with the options
+  in both orders (this cancels position bias, and is exactly what was benchmarked).
+- `d1`: LiquidAI d1-3B, queried through `/v1/systemone` with a `choice` question. Supported,
+  but not recommended: it separates worse on the adversarial set (see the ADR).
+
+Setup for `tev1` (about 3 GB of VRAM; tested with an 8 GB NVIDIA GPU):
+
+```bash
+# 1. llama.cpp with CUDA (or download a prebuilt release from github.com/ggml-org/llama.cpp/releases
+#    and skip the build; CPU-only works too, only slower). Benchmarked at commit 9df0b73.
+git clone https://github.com/ggml-org/llama.cpp ~/.cache/t2sql/llama.cpp
+cmake -S ~/.cache/t2sql/llama.cpp -B ~/.cache/t2sql/llama.cpp/build -DGGML_CUDA=ON \
+      -DCMAKE_CUDA_ARCHITECTURES=86          # 86 = RTX 30xx; use your GPU's compute capability
+cmake --build ~/.cache/t2sql/llama.cpp/build --config Release -j --target llama-server
+
+# 2. The model: Q4_K_M quantization, 2.8 GB
+mkdir -p ~/.cache/t2sql/models/Tev1-4B-GGUF
+curl -L -o ~/.cache/t2sql/models/Tev1-4B-GGUF/togethercomputer_Tev1-4B-experimental-Q4_K_M.gguf \
+  https://huggingface.co/bartowski/togethercomputer_Tev1-4B-experimental-GGUF/resolve/main/togethercomputer_Tev1-4B-experimental-Q4_K_M.gguf
+
+# 3. The server (-np 1: one slot, the requests are sequential; -c 2048 is enough for the prompt)
+~/.cache/t2sql/llama.cpp/build/bin/llama-server \
+  -m ~/.cache/t2sql/models/Tev1-4B-GGUF/togethercomputer_Tev1-4B-experimental-Q4_K_M.gguf \
+  -ngl 99 -c 2048 -np 1 --host 127.0.0.1 --port 8090
+
+# 4. The agent
+T2SQL_CLASSIFIER=cascade uv run t2sql ask -v "How many customers?"
+```
+
+**License caveat**: the Tev1-4B-experimental model card says the license of the fine-tuned
+weights "is being finalized" (the base model, Qwen3.5-4B, is Apache-2.0). Treat it as
+experimental until that is settled; the repository does not bundle it. d1-3B is under the
+LFM Open License v1.0.
+
+Settings (see `.env.example`): `T2SQL_LOCAL_CLASSIFIER_MODEL` (`tev1`),
+`T2SQL_LOCAL_CLASSIFIER_URL` (default `http://127.0.0.1:8090`),
+`T2SQL_LOCAL_CLASSIFIER_TIMEOUT_S` (2, per request), `T2SQL_LOCAL_THRESHOLD` (0.5, `local`
+mode), `T2SQL_CASCADE_LOW` (0.10), `T2SQL_CASCADE_HIGH` (0.93). The band was chosen on the dev
+split of the scope benchmark; raising LOW or lowering HIGH sends more questions to the local
+model and makes confident mistakes possible (sensitivity in the ADR).
+
+Measured with `evals/scope_run.py` on the 136-question test split of
+`evals/scope_dataset.yaml` (71 out of scope, 65 answerable; English and Spanish; the cloud
+LLM is `gemini-3.5-flash-lite`; 2026-10-20):
+
+| Classifier | Scope accuracy | OOS recall | False rejection | Decided locally | Cloud classify calls | Mean latency |
+|---|---|---|---|---|---|---|
+| `llm` (cloud only) | 91.2% | 83.1% | 0.0% | 0% | 136 | 18.3 s (Gemini was slow and timed out on some calls that day; p95 56 s) |
+| `local` (Tev1 alone, threshold 0.5) | 90.4% | 87.3% | 6.2% | 100% | 0 | 0.33 s |
+| `cascade` (0.10 / 0.93) | 91.2% | 83.1% | 0.0% | 52.9% | 64 | 0.33 s locally decided; escalated ones add one cloud call |
+
+The cascade made the same decisions as the cloud LLM on all 136 questions and made no
+confident local mistakes, while skipping the cloud call for 72 of them. Its cloud latency
+is not shown because the escalated decisions were replayed from the `llm` run's cache.
+The cloud LLM's own misses are the prompt-injection-embedded questions and the multi-intent
+ones (one answerable part, one not); the SQL guard still protects the database in those
+cases, the cost is a wasted generation. Caveats: the set is small and hand-written, dev and
+test come from the same pool of questions, and only one cloud model was measured, so read the
+differences between rows as indicative (one question is 0.7 points).
+
+Who decided is visible everywhere: the trace entry of `classify` has
+`details = {decided_by: "local" | "llm", p_in, local_ms, local_model}`; `t2sql ask -v` prints
+"decided locally (local d1 p=0.97, 180 ms)"; the web UI shows "in scope · es · local d1
+p=0.97" or "· cloud LLM"; `/health` adds `classifier` and `local_classifier` (reachable or
+not, short timeout; it never makes the status `degraded`). Locally decided classifications
+have no LLM metadata, so they add no tokens or cost to the summary.
+`uv run python -m evals.run --classifier cascade` runs the full agent evals with it and adds a
+table with the share of questions decided locally and the cloud calls per question. To measure
+only the scope decision (fast, and the way the numbers above were produced):
+
+```bash
+uv run python -m evals.scope_run --classifier local   --split test
+uv run python -m evals.scope_run --classifier llm     --split test --providers gemini --sleep 4 --cache /tmp/cloud.json
+uv run python -m evals.scope_run --classifier cascade --split test --providers gemini --cache /tmp/cloud.json
+```
+
+`--cache` stores each cloud decision, so a run interrupted by a quota limit resumes where it
+stopped and `cascade` reuses the answers of the `llm` run instead of calling the cloud again.
+
 ## Evals
 
 `evals/dataset.yaml`: **55 items** over Chinook, each with a reference SQL that is executed
@@ -296,6 +401,9 @@ stderr.
 | [0002](docs/adr/0002-schema-rag-instead-of-full-schema.md) | Retrieve the relevant tables (pgvector, local embeddings, FK bridges), measured by table recall |
 | [0003](docs/adr/0003-capped-repair-loop.md) | Repair loop capped at 2, empty-result rule, every attempt traced |
 | [0004](docs/adr/0004-langgraph-over-a-handwritten-loop.md) | LangGraph instead of a hand-written loop, and its trade-offs |
+| [0005](docs/adr/0005-local-system1-classifier-cascade.md) | Optional local "System 1" scope classifier in front of the cloud LLM (cascade, off by default) |
+
+The write-up of how the local classifier was chosen (four rounds of measurements, the bar, what failed) is [docs/system1-classifier-study.md](docs/system1-classifier-study.md); the retrieval story is [docs/eval-findings.md](docs/eval-findings.md).
 
 ## Project structure
 
@@ -306,6 +414,7 @@ src/t2sql/
   sql_guard.py      sqlglot validation (pure, no database)
   db.py             read-only execution, schema introspection
   schema_index.py   embeddings in pgvector, ranking, keyword score, FK bridge expansion
+  local_classifier.py  optional local scope scorers (llama-server: Tev1, d1), language heuristic
   catalog.py        table descriptions, column hints, keyword vocabulary
   llm.py            provider-agnostic interface, Gemini/Groq/Anthropic, fallback
   tracing.py        cost and trace summaries
@@ -314,16 +423,19 @@ src/t2sql/
 evals/
   dataset.yaml      55 items with reference SQL     holdout.yaml  18-question probe set (retrieval)
   run.py            harness and markdown report     compare.py    result-set comparator
+  scope_dataset.yaml  272 labelled questions (EN/ES) for the scope decision
+  scope_run.py      classify-only evaluation (llm | local | cascade)
 db/                 Chinook, pgvector extension, read-only role (loaded by docker compose)
 docs/adr/           decision records                docs/eval-findings.md  the retrieval story
+                    docs/system1-classifier-study.md  how the local classifier was chosen
 tests/
 ```
 
 ## Testing
 
 ```bash
-uv run pytest                    # 425 tests
-uv run pytest -m "not integration"   # 335 tests, no database needed
+uv run pytest                    # 534 tests
+uv run pytest -m "not integration"   # 444 tests, no database needed
 ```
 
 Tests marked `integration` need `docker compose up -d` and are skipped automatically if

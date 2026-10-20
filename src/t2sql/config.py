@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 CHINOOK_TABLES: tuple[str, ...] = (
@@ -62,6 +62,19 @@ class Settings(BaseSettings):
     # Repair loop: retries after the first generation (max 1 + max_repairs generations).
     max_repairs: int = 2
 
+    # Scope classifier. "llm": the cloud LLM decides (default). "local": a small local model served
+    # by llama-server decides. "cascade": the local model decides when it is confident, the cloud
+    # LLM otherwise. If the local server is down, both fall back to the cloud LLM.
+    classifier: Literal["llm", "local", "cascade"] = "llm"
+    local_classifier_model: Literal["tev1", "d1"] = "tev1"
+    local_classifier_url: str = "http://127.0.0.1:8090"
+    local_classifier_timeout_s: float = 2.0
+    # P(in scope) at or above this is "in scope" when the local model decides alone ("local").
+    local_threshold: float = 0.5
+    # "cascade": P < low is out of scope, P > high is in scope, in between asks the cloud LLM.
+    cascade_low: float = 0.10
+    cascade_high: float = 0.93
+
     # Tracing. Extra/override prices: {"model": [usd_per_1m_input, usd_per_1m_output]}.
     model_prices: dict[str, tuple[float, float]] = {}
     trace_file: str | None = None  # append one JSON line per question
@@ -91,6 +104,12 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = Field(
         None, validation_alias=AliasChoices("T2SQL_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY")
     )
+
+    @model_validator(mode="after")
+    def _check_cascade_band(self) -> "Settings":
+        if not 0 <= self.cascade_low <= self.cascade_high <= 1:
+            raise ValueError("need 0 <= T2SQL_CASCADE_LOW <= T2SQL_CASCADE_HIGH <= 1")
+        return self
 
     @field_validator("llm_providers", mode="before")
     @classmethod

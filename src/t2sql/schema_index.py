@@ -29,6 +29,7 @@ META_SCHEMA = "t2sql_meta"
 DEFAULT_TABLE = "schema_docs"
 COLUMN_WEIGHT = 0.5  # weight of the column evidence when ranking a table
 TOP_COLUMNS = 2  # how many best column docs count per table
+COLUMN_HITS_SHOWN = 3  # best column docs reported per table in the retrieval details
 MAX_BRIDGES = 3  # max intermediate tables when connecting two selected tables
 SEARCH_LIMIT = 60  # docs fetched per query (the index has 75)
 
@@ -167,6 +168,20 @@ def index_exists(embedder_name: str, settings: Settings, table: str = DEFAULT_TA
 # ---------------------------------------------------------------- scoring and FK expansion
 
 
+def column_hits(
+    hits: list[tuple[str, str | None, float]], tables: list[str], top: int = COLUMN_HITS_SHOWN
+) -> dict[str, list[dict[str, Any]]]:
+    """The `top` column docs most similar to the question, per table (for the UI / trace)."""
+    per_table: dict[str, list[tuple[float, str]]] = {t: [] for t in tables}
+    for t, c, s in hits:
+        if c is not None and t in per_table:
+            per_table[t].append((s, c))
+    return {
+        t: [{"column": c, "score": round(s, 4)} for s, c in sorted(found, key=lambda x: (-x[0], x[1]))[:top]]
+        for t, found in per_table.items()
+    }
+
+
 def aggregate_scores(hits: list[tuple[str, str | None, float]]) -> dict[str, float]:
     """(table, column|None, cosine similarity) hits -> one score per table.
 
@@ -242,20 +257,31 @@ def _shortest_path(g: dict[str, set[str]], src: str, dst: str) -> list[str] | No
     return None
 
 
-def expand_with_bridges(
+def bridge_paths(
     selected: list[str], g: dict[str, set[str]], max_bridges: int = MAX_BRIDGES
-) -> list[str]:
-    """Intermediate tables on the shortest FK path between each pair of selected tables.
+) -> list[list[str]]:
+    """Shortest FK paths between pairs of selected tables whose interior adds a table.
 
     Pairs further apart than `max_bridges` intermediate tables are left alone, so the
-    context stays bounded. Only path nodes are added, never all neighbours.
+    context stays bounded. Each path is returned whole (endpoints included, e.g.
+    ["invoice_line", "track", "album", "artist"]), in pair order, so the UI can draw why a
+    table was pulled in; a path whose interior is already selected explains nothing and is skipped.
     """
-    extra: set[str] = set()
+    chosen = set(selected)
+    paths = []
     for i, a in enumerate(selected):
         for b in selected[i + 1 :]:
             path = _shortest_path(g, a, b)
-            if path and 0 < len(path) - 2 <= max_bridges:
-                extra.update(path[1:-1])
+            if path and 0 < len(path) - 2 <= max_bridges and not set(path[1:-1]) <= chosen:
+                paths.append(path)
+    return paths
+
+
+def expand_with_bridges(
+    selected: list[str], g: dict[str, set[str]], max_bridges: int = MAX_BRIDGES
+) -> list[str]:
+    """Intermediate tables of `bridge_paths`: only path nodes are added, never all neighbours."""
+    extra = {t for path in bridge_paths(selected, g, max_bridges) for t in path[1:-1]}
     return sorted(extra - set(selected))
 
 
@@ -299,23 +325,32 @@ class PgVectorRetriever:
 
     def retrieve(self, question: str) -> Retrieval:
         meta = {t.name: t for t in self._metadata()}
-        scores = aggregate_scores([h for h in self._hits(question) if h[0] in meta])
+        hits = [h for h in self._hits(question) if h[0] in meta]
+        dense = aggregate_scores(hits)
+        scores = dense
+        lex: dict[str, float] = {}
         if self._lexical_weight:
             lex = lexical_scores(question, self._keywords)
-            scores = {t: sc + self._lexical_weight * lex.get(t, 0.0) for t, sc in scores.items()}
+            scores = {t: sc + self._lexical_weight * lex.get(t, 0.0) for t, sc in dense.items()}
         ranked = sorted(scores, key=lambda t: (-scores[t], t))
         selected = ranked[: self._top_k]
-        expanded = expand_with_bridges(selected, fk_graph(list(meta.values())))
+        g = fk_graph(list(meta.values()))
+        paths = bridge_paths(selected, g)
+        expanded = expand_with_bridges(selected, g)
         final = sorted(selected + expanded)  # stable order for the prompt
-        return Retrieval(
-            [meta[t] for t in final],
-            {
-                "retriever": "pgvector",
-                "scores": {t: round(scores[t], 4) for t in ranked},
-                "selected": selected,
-                "expanded": expanded,
-            },
-        )
+        details: dict[str, Any] = {
+            "retriever": "pgvector",
+            "top_k": self._top_k,
+            "scores": {t: round(scores[t], 4) for t in ranked},
+            "dense": {t: round(dense[t], 4) for t in ranked},
+            "selected": selected,
+            "expanded": expanded,
+            "bridge_paths": paths,
+            "column_hits": column_hits(hits, final),
+        }
+        if self._lexical_weight:  # omitted (not zeros) when the lexical scorer is off
+            details["lexical"] = {t: round(lex.get(t, 0.0), 4) for t in ranked}
+        return Retrieval([meta[t] for t in final], details)
 
     def __call__(self, question: str) -> list[TableInfo]:
         return self.retrieve(question).tables

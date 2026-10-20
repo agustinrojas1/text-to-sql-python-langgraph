@@ -217,6 +217,7 @@ def test_health_with_fakes():
     with make_client(happy_llm(), **ok) as c:
         assert c.get("/health").json() == {
             "status": "ok", "database": True, "schema_index": True, "llm_providers": ["gemini"],
+            "classifier": "llm", "local_classifier": None,
         }
     down = dict(db_check=lambda: False, index_check=lambda: pytest.fail("not asked when DB is down"))
     with make_client(happy_llm(), **down) as c:
@@ -256,7 +257,10 @@ def test_stream_happy_path_events_in_order():
         "classify", "retrieve_schema", "generate_sql", "validate_sql", "execute", "respond",
     ]
     by = {e["node"]: e for e in evs[:-1]}
-    assert by["classify"]["data"] == {"in_scope": True, "language": "en", "reason": "r"}
+    assert by["classify"]["data"] == {
+        "in_scope": True, "language": "en", "reason": "r", "decided_by": "llm", "p_in": None,
+        "local_ms": None, "local_model": None, "local_unavailable": False,
+    }  # fmt: skip
     assert by["classify"]["llm"]["model"] == "fake-model" and by["classify"]["cost_usd"] is None
     assert by["retrieve_schema"]["data"]["tables"] == ["customer"]
     assert by["generate_sql"]["data"]["sql"] == "SELECT count(*) AS n FROM customer"

@@ -50,3 +50,21 @@ def format_schema(tables: list[TableInfo]) -> str:
             lines.append(line)
         blocks.append(f"TABLE {t.name} (\n" + ",\n".join(lines) + "\n)")
     return "\n\n".join(blocks)
+
+
+def schema_summary(tables: list[TableInfo]) -> list[dict[str, Any]]:
+    """Structured twin of `format_schema`: what the SQL prompt shows, as data.
+
+    `[{"name", "columns": [{"name", "type", "pk", "fk": "table.column" | None}]}]`, in the
+    order of `tables`. The UI draws it and the validate node resolves column references
+    against it, so both see exactly what the model saw.
+    """
+    out = []
+    for t in tables:
+        fks = {fk.column: f"{fk.ref_table}.{fk.ref_column}" for fk in t.foreign_keys}
+        columns = [
+            {"name": c.name, "type": c.data_type, "pk": c.is_primary_key, "fk": fks.get(c.name)}
+            for c in t.columns
+        ]
+        out.append({"name": t.name, "columns": columns})
+    return out

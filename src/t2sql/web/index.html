@@ -127,7 +127,8 @@ const ms = (v) => v == null ? "" : v >= 1000 ? (v / 1000).toFixed(1) + " s" : Ma
 const usd = (v) => v == null ? "n/a" : "$" + (v < 0.01 ? v.toFixed(5) : v.toFixed(3));
 
 fetch("/health").then((r) => r.json()).then((h) => {
-  $("#meta").textContent = "Chinook, PostgreSQL" + (h.llm_providers.length ? " · " + h.llm_providers.join(", ") : " · no LLM configured");
+  $("#meta").textContent = "Chinook, PostgreSQL" + (h.llm_providers.length ? " · " + h.llm_providers.join(", ") : " · no LLM configured")
+    + (h.classifier !== "llm" ? ` · classifier: ${h.classifier} (local ${h.local_classifier ? "up" : "down"})` : "");
 }).catch(() => {});
 
 // ---- step rows
@@ -135,7 +136,13 @@ fetch("/health").then((r) => r.json()).then((h) => {
 function detailLine(ev) {
   const d = ev.data;
   switch (ev.node) {
-    case "classify": return d.in_scope ? `in scope · ${d.language}` : `out of scope · ${d.reason}`;
+    case "classify": {
+      const by = d.decided_by === "local" ? `local ${d.local_model} p=${d.p_in.toFixed(2)}`
+        : d.local_unavailable ? "cloud LLM (local unavailable)"
+        : d.p_in != null ? `cloud LLM (local ${d.local_model} p=${d.p_in.toFixed(2)}, unsure)` : "cloud LLM";
+      const why = !d.in_scope && d.decided_by !== "local" ? ` · ${d.reason}` : "";
+      return `${d.in_scope ? "in scope" : "out of scope"} · ${d.language} · ${by}${why}`;
+    }
     case "retrieve_schema": {
       const sel = d.tables.filter((t) => !d.bridges.includes(t));
       return sel.join(", ") + (d.bridges.length ? ` +${d.bridges.length} bridge` : "");

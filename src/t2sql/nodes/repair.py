@@ -29,7 +29,12 @@ def make_repair(deps: Deps) -> Node:
             "error_kind": None,
             "rows": None,
             "columns": None,
-            "_details": {"kind": kind, "failed_attempt": entry["attempt"]},
+            "_details": {
+                "kind": kind,
+                "failed_attempt": entry["attempt"],
+                # Generations still allowed once this repair is done (max 1 + max_repairs).
+                "attempts_left": deps.settings.max_repairs + 1 - state["attempts"],
+            },
         }
 
     return repair

@@ -38,6 +38,7 @@ from t2sql.config import Settings, get_settings
 from t2sql.db import DatabaseUnavailableError
 from t2sql.graph import build_graph, run_question, stream_question
 from t2sql.llm import PROVIDERS, LLMUnavailableError, build_llm
+from t2sql.local_classifier import build_scorer
 from t2sql.schema_index import index_exists
 
 log = logging.getLogger("t2sql.api")
@@ -83,6 +84,10 @@ class Health(BaseModel):
     database: bool
     schema_index: bool
     llm_providers: list[str]  # names with an API key configured, never the keys
+    classifier: str  # "llm" | "local" | "cascade"
+    # Is the local scorer's server up? None when the classifier is "llm". Not part of `status`:
+    # without it the cloud LLM classifies, so the service still works.
+    local_classifier: bool | None
 
 
 # ---------------------------------------------------------------- runtime
@@ -98,6 +103,7 @@ class Runtime:
     llm_providers: list[str] = field(default_factory=list)
     db_check: Callable[[], bool] = lambda: True
     index_check: Callable[[], bool] = lambda: True
+    local_check: Callable[[], bool] | None = None  # None: no local classifier configured
 
 
 def _db_reachable(settings: Settings) -> bool:
@@ -116,16 +122,18 @@ def build_runtime() -> Runtime:
     providers = [
         p for p in settings.llm_providers if p in PROVIDERS and getattr(settings, PROVIDERS[p][0])
     ]
+    scorer = build_scorer(settings)
     runtime = Runtime(
         graph=None,
         settings=settings,
         llm_providers=providers,
         db_check=lambda: _db_reachable(settings),
         index_check=lambda: index_exists(settings.embedding_model, settings),
+        local_check=scorer.available if scorer else None,
     )
     try:
         llm = build_llm(settings)
-        runtime.graph = build_graph(llm, settings=settings)
+        runtime.graph = build_graph(llm, settings=settings, scorer=scorer)
     except LLMUnavailableError as e:
         runtime.llm_error = str(e)
         log.warning("Starting without an LLM: %s", e)
@@ -265,6 +273,8 @@ def create_app(factory: Callable[[], Runtime] = build_runtime) -> FastAPI:
             database=db,
             schema_index=index,
             llm_providers=runtime.llm_providers,
+            classifier=runtime.settings.classifier,
+            local_classifier=runtime.local_check() if runtime.local_check else None,
         )
 
     return app

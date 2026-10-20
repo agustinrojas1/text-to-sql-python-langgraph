@@ -8,6 +8,7 @@ from typing import Annotated, Any, TypedDict
 from t2sql.config import Settings
 from t2sql.db import QueryResult
 from t2sql.llm import LLM
+from t2sql.local_classifier import ScopeScorer
 from t2sql.retrieval import SchemaRetriever
 
 
@@ -18,6 +19,7 @@ class AgentState(TypedDict, total=False):
     scope_reason: str
     candidate_tables: list[str]
     schema_context: str  # DDL-like text handed to generate_sql
+    schema_tables: list[dict[str, Any]]  # the same schema as data (retrieval.schema_summary)
     sql: str  # raw from the LLM, then replaced by the validated/regenerated SQL
     tables_used: list[str]
     assumptions: list[str]
@@ -43,3 +45,4 @@ class Deps:
     retriever: SchemaRetriever
     settings: Settings
     executor: Executor
+    scorer: ScopeScorer | None = None  # local scope classifier; None = the cloud LLM decides

@@ -44,6 +44,11 @@ def _money(v: float | None) -> str:
 
 def _detail(e: dict[str, Any]) -> str:
     d = e.get("details") or {}
+    if "decided_by" in d:
+        scored = f" (local {d['local_model']} p={d['p_in']:.2f}, {d['local_ms']:.0f} ms)" if d.get("p_in") is not None else ""
+        if d["decided_by"] == "local":
+            return f"decided locally{scored}"
+        return "decided by the cloud LLM" + (scored or (" (local classifier unavailable)" if d.get("local_unavailable") else ""))
     if "scores" in d:
         scores = " ".join(f"{t}={s:.2f}" for t, s in list(d["scores"].items())[:6])
         return f"top-k: {', '.join(d['selected'])} | +bridges: {', '.join(d['expanded']) or '-'} | {scores}"
@@ -59,10 +64,11 @@ def _print_trace(trace: list[dict[str, Any]], summary: dict[str, Any]) -> None:
     table = Table("node", "att", "provider/model", "tokens in/out", "latency ms", "cost", "error")
     for e in trace:
         m = e["llm"] or {}
+        local = (e.get("details") or {}).get("decided_by") == "local"
         table.add_row(
             e["node"],
             str(e["attempt"]),
-            f"{m['provider']}/{m['model']}" if m else "",
+            f"{m['provider']}/{m['model']}" if m else f"local/{e['details']['local_model']}" if local else "",
             f"{m['input_tokens']}/{m['output_tokens']}" if m else "",
             str(m.get("latency_ms", e["latency_ms"])) if m else str(e["latency_ms"]),
             _money(e["cost_usd"]) if m else "",
