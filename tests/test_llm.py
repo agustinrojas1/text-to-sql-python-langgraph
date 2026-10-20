@@ -135,7 +135,8 @@ def test_providers_without_keys_are_skipped():
     }
     llm = build_llm(settings(groq_api_key="k"), registry)
     assert built == ["groq"]
-    assert llm.provider == "groq"  # single provider: no fallback wrapper
+    # Even a single provider is wrapped, so its failures become LLMUnavailableError.
+    assert isinstance(llm, FallbackLLM) and [p.provider for p in llm.providers] == ["groq"]
 
     built.clear()
     llm = build_llm(settings(groq_api_key="k", google_api_key="k"), registry)
@@ -216,3 +217,54 @@ def test_groq_keeps_temperature_zero(monkeypatch):
 
     _make_groq(Settings(_env_file=None, groq_api_key="fake"))
     assert seen["temperature"] == 0
+
+
+def _quota_errors():
+    import anthropic
+    import groq
+    import httpx
+    from google.genai.errors import ClientError
+    from langchain_google_genai.chat_models import GoogleRateLimitError
+
+    resp = httpx.Response(429, request=httpx.Request("POST", "https://x"))
+    return [
+        GoogleRateLimitError("quota exceeded"),
+        ClientError(429, {"error": {"status": "RESOURCE_EXHAUSTED", "message": "quota"}}),
+        groq.RateLimitError("rate limited", response=resp, body=None),
+        anthropic.RateLimitError("rate limited", response=resp, body=None),
+    ]
+
+
+@pytest.mark.parametrize("i", range(4))
+def test_quota_errors_are_detected(i):
+    from t2sql.llm import is_quota_error
+
+    assert is_quota_error(_quota_errors()[i])
+
+
+def test_non_quota_errors_are_not_quota():
+    from t2sql.llm import is_quota_error
+
+    assert not is_quota_error(TimeoutError("slow")) and not is_quota_error(ValueError("bad json"))
+
+
+def test_single_provider_failure_is_typed_and_quota_message_is_safe():
+    for err in _quota_errors():
+        llm = FallbackLLM([ChatModelLLM("gemini", "m", StubChat(error=err), parse_retries=0)])
+        with pytest.raises(LLMUnavailableError) as e:
+            llm.text(MSGS)
+        assert e.value.quota
+        assert e.value.public_detail == (
+            "LLM quota or rate limit exceeded for gemini; try again later or configure "
+            "another provider (T2SQL_LLM_PROVIDERS)"
+        )
+
+
+def test_mixed_failures_are_not_reported_as_quota():
+    llm = FallbackLLM([
+        FakeLLM([_quota_errors()[2]], provider="groq"),
+        FakeLLM([TimeoutError("slow")], provider="gemini"),
+    ])
+    with pytest.raises(LLMUnavailableError) as e:
+        llm.text(MSGS)
+    assert not e.value.quota and e.value.public_detail == "All LLM providers failed; try again later"

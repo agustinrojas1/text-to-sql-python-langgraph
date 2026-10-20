@@ -55,7 +55,36 @@ class LLM(Protocol):
 
 
 class LLMUnavailableError(RuntimeError):
-    """No provider is configured, or every configured provider failed."""
+    """No provider is configured, or every configured provider failed.
+
+    `str(e)` may carry provider error text (for logs). `public_detail` is the safe message
+    for clients: no keys, no raw provider payloads. `quota` is True when every provider
+    failed because of a quota or rate limit.
+    """
+
+    def __init__(self, message: str, *, public_detail: str | None = None, quota: bool = False) -> None:
+        super().__init__(message)
+        self.public_detail = public_detail or message
+        self.quota = quota
+
+
+def is_quota_error(exc: BaseException) -> bool:
+    """True for a quota / rate-limit failure from any provider SDK (429, RESOURCE_EXHAUSTED).
+
+    Duck-typed over the exception chain so it covers groq/anthropic `RateLimitError`,
+    google-genai `ClientError(429)` and langchain's `GoogleRateLimitError` without
+    importing the SDKs.
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if "ratelimit" in type(cur).__name__.lower() or "RESOURCE_EXHAUSTED" in str(cur):
+            return True
+        if 429 in (getattr(cur, "status_code", None), getattr(cur, "code", None)):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
 
 
 def _to_lc(messages: list[Message]) -> list[SystemMessage | HumanMessage]:
@@ -155,13 +184,26 @@ class FallbackLLM:
 
     def _first_ok[R](self, call: Callable[[LLM], R]) -> R:
         errors: list[str] = []
+        quota_names: list[str] = []
         for p in self.providers:
             try:
                 return call(p)
             except Exception as e:  # rate limit, 5xx, timeout, unparseable output...
                 name = getattr(p, "provider", type(p).__name__)
                 errors.append(f"{name}: {type(e).__name__}: {e}")
-        raise LLMUnavailableError("All LLM providers failed:\n" + "\n".join(errors))
+                if is_quota_error(e):
+                    quota_names.append(name)
+        message = "All LLM providers failed:\n" + "\n".join(errors)
+        if len(quota_names) == len(self.providers):
+            raise LLMUnavailableError(
+                message,
+                quota=True,
+                public_detail=(
+                    f"LLM quota or rate limit exceeded for {', '.join(quota_names)}; try again "
+                    "later or configure another provider (T2SQL_LLM_PROVIDERS)"
+                ),
+            )
+        raise LLMUnavailableError(message, public_detail="All LLM providers failed; try again later")
 
     def structured[S: BaseModel](self, messages: list[Message], schema: type[S]) -> LLMResult[S]:
         return self._first_ok(lambda p: p.structured(messages, schema))
@@ -266,4 +308,6 @@ def build_llm(
             + (", ".join(skipped) or "any provider")
             + ". Set it in .env (see .env.example) or check T2SQL_LLM_PROVIDERS."
         )
-    return built[0] if len(built) == 1 else FallbackLLM(built)
+    # Always wrapped, even with one provider, so provider failures (quota, 5xx, timeouts)
+    # surface as a typed LLMUnavailableError instead of an SDK-specific exception.
+    return FallbackLLM(built)

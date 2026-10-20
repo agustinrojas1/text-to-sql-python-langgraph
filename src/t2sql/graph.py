@@ -7,6 +7,9 @@ generate_sql while attempts remain (T2SQL_MAX_REPAIRS); then respond_error / res
 A database outage (DatabaseUnavailableError) is not repairable: it propagates out of the graph.
 """
 
+from collections.abc import Iterator
+from typing import Any
+
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -84,12 +87,78 @@ def build_graph(
     return g.compile().with_config({"recursion_limit": recursion_limit(settings.max_repairs)})
 
 
-def run_question(
-    graph: CompiledStateGraph, question: str, settings: Settings | None = None
-) -> AgentState:
-    """Run the graph (its recursion limit is set in build_graph), attach the trace summary and (if configured) append the trace file."""
-    state = graph.invoke({"question": question, "attempts": 0, "attempt_history": [], "trace": []})
+def _initial_state(question: str) -> dict[str, Any]:
+    return {"question": question, "attempts": 0, "attempt_history": [], "trace": []}
+
+
+def _finish(state: AgentState, question: str, settings: Settings | None) -> AgentState:
+    """Attach the trace summary and (if configured) append the trace file."""
     state["summary"] = summarize_trace(state["trace"])
     if settings and settings.trace_file:
         append_trace_file(settings.trace_file, question, state)
     return state
+
+
+def run_question(
+    graph: CompiledStateGraph, question: str, settings: Settings | None = None
+) -> AgentState:
+    """Run the graph (its recursion limit is set in build_graph), attach the trace summary and (if configured) append the trace file."""
+    return _finish(graph.invoke(_initial_state(question)), question, settings)
+
+
+def node_event(node: str, update: dict[str, Any]) -> dict[str, Any]:
+    """One streaming event from a node's state update (its trace entry plus a small payload)."""
+    entry = update["trace"][-1]
+    details = entry.get("details") or {}
+    err = update.get("error")
+    if node == "classify":
+        data = {"in_scope": update["in_scope"], "language": update["language"], "reason": update["scope_reason"]}
+    elif node == "retrieve_schema":
+        scores = details.get("scores") or {}
+        data = {
+            "tables": update["candidate_tables"],
+            "selected": details.get("selected") or update["candidate_tables"],
+            "bridges": details.get("expanded") or [],
+            "top_scores": dict(list(scores.items())[:6]),
+        }
+    elif node == "generate_sql":
+        data = {"sql": update["sql"], "assumptions": update.get("assumptions") or []}
+    elif node == "validate_sql":
+        data = {"ok": not err, "error": err, "sql": None if err else update["sql"]}
+    elif node == "execute":
+        data = {"ok": not err, "error": err, "row_count": details.get("row_count")}
+    elif node == "repair":
+        failed = update["attempt_history"][-1]
+        data = {"kind": failed["kind"], "error": failed["error"], "failed_sql": failed["sql"]}
+    else:  # respond, respond_error, respond_out_of_scope
+        data = {"answer": update["answer"]}
+    return {
+        "type": "node",
+        "node": node,
+        "attempt": entry["attempt"],
+        "latency_ms": entry["latency_ms"],
+        "llm": entry["llm"],
+        "cost_usd": entry["cost_usd"],
+        "error": err,
+        "data": data,
+    }
+
+
+def stream_question(
+    graph: CompiledStateGraph, question: str, settings: Settings | None = None
+) -> Iterator[dict[str, Any]]:
+    """Like run_question, but yields one `node` event per node execution as it finishes,
+    then a `final` event carrying the complete state (with summary). Exceptions from the
+    graph propagate to the caller, as with run_question.
+
+    "updates" gives each node's own update; "values" gives the full state after each step,
+    so the last one is the final state without re-implementing the reducers here.
+    """
+    state: AgentState = {}
+    for mode, chunk in graph.stream(_initial_state(question), stream_mode=["updates", "values"]):
+        if mode == "values":
+            state = chunk
+        else:
+            for node, update in chunk.items():
+                yield node_event(node, update)
+    yield {"type": "final", "state": _finish(state, question, settings)}

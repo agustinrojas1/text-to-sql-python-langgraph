@@ -103,7 +103,10 @@ def ask(
     except DatabaseUnavailableError as e:  # not repairable: the SQL is not the problem
         err.print(f"[red]Database unavailable: {escape(str(e))}[/]")
         raise typer.Exit(1) from e
-    except Exception as e:  # LLM outage...
+    except LLMUnavailableError as e:  # provider outage or quota: safe message, no payloads
+        err.print(f"[red]{escape(e.public_detail)}[/]")
+        raise typer.Exit(1) from e
+    except Exception as e:
         err.print(f"[red]{type(e).__name__}: {escape(str(e))}[/]")
         raise typer.Exit(1) from e
 

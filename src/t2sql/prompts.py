@@ -38,9 +38,16 @@ Your previous attempt(s) failed. Write a corrected query that fixes the problem.
 Return the same structured answer (sql, tables_used, assumptions)."""
 
 RESPOND_SYSTEM = """You answer a user's question from the result of a SQL query.
-Reply in the same language as the question (English or Spanish), in 1 to 3 short sentences.
-Use only the data shown; do not invent numbers. If the result is empty, say that no data matched.
-If the result is truncated, say that you are showing a sample. Do not repeat the SQL."""
+The full result table is always shown to the user right next to your answer, so do not
+reproduce it. Reply in the same language as the question (English or Spanish), in 1 or 2
+short sentences that summarize: how many rows matched, the headline value or top item, and
+any notable caveat.
+- Never enumerate more than 3 items; for longer results give the count and at most the top few.
+- Never list emails, IDs, phone numbers or long rows.
+- Use only the data shown; do not invent numbers. If the result is empty, say that no data matched.
+- You may be given only a sample of the rows; the total row count is stated. If the result is
+  larger than the sample, mention that the table next to the answer has the full list.
+- Do not repeat the SQL."""
 
 OUT_OF_SCOPE = {
     "en": "I can't answer that with this database.",
@@ -73,6 +80,9 @@ def respond_messages(
     question: str, sql: str, columns: list[str], rows: list[dict[str, Any]], total_rows: int
 ) -> list[Message]:
     data = json.dumps(rows, default=str, ensure_ascii=False)
-    note = f" (showing the first {len(rows)} of {total_rows})" if total_rows > len(rows) else ""
-    user = f"Question: {question}\n\nSQL:\n{sql}\n\nColumns: {columns}\nRows{note}:\n{data}"
+    sample = f" (sample: first {len(rows)} of them)" if total_rows > len(rows) else ""
+    user = (
+        f"Question: {question}\n\nSQL:\n{sql}\n\nColumns: {columns}\n"
+        f"Total rows: {total_rows}{sample}\nRows:\n{data}"
+    )
     return [Message("system", RESPOND_SYSTEM), Message("user", user)]

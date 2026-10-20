@@ -119,12 +119,31 @@ curl -s localhost:8000/ask -H 'content-type: application/json' \
 - `POST /ask` takes `{"question": "..."}` (1 to 500 characters; else 422). Add
   `?include_trace=true` to get the per-node `trace`. Out-of-scope questions and failures
   after the repair budget is spent are `200` (`in_scope: false`, or `error` set); `503` if no
-  LLM provider is configured, all of them failed, or the database is unavailable
-  ("Database unavailable"); `500` with a generic message otherwise.
+  LLM provider is configured, all of them failed (a quota or rate limit says "LLM quota or
+  rate limit exceeded for <provider>; try again later or configure another provider", also
+  with a single provider), or the database is unavailable ("Database unavailable"); `500` with a generic message otherwise.
 - `GET /health` reports database reachability (read-only role), whether the schema index
   exists, and the names of the LLM providers with a key. The app starts without API keys
   or with the database down; only `/ask` answers 503.
+- `POST /ask/stream` takes the same body and answers `application/x-ndjson`: one JSON object
+  per line, a `node` event as each graph step finishes (node, attempt, latency, LLM
+  provider/model/tokens/cost, and a small payload: SQL, tables, row count, guard error...),
+  then one `final` event (the same fields as `/ask`) or an `error` event (`status` 503/500
+  with the same meaning as above, since the HTTP status is already sent).
 - `Decimal` values are returned as floats and dates as ISO 8601 strings.
+
+## Web UI
+
+```bash
+uv run uvicorn t2sql.api:app        # then open http://127.0.0.1:8000
+```
+
+A single static page (`src/t2sql/web/index.html`, no build step, no external assets) served
+at `GET /`. It sends the question to `/ask/stream` and fills in a step list as the agent
+moves through classify, retrieve schema, generate SQL, validate, execute, repair and answer,
+with the latency of each step and an expandable detail (SQL, retrieval scores, tokens,
+cost). When it finishes it shows the answer, the result table, the SQL and the run totals.
+Each question is independent: there is no conversation memory.
 
 ## Evals
 

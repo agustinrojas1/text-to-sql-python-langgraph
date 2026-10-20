@@ -1,4 +1,4 @@
-"""HTTP API: `POST /ask` and `GET /health`.
+"""HTTP API: `POST /ask`, `POST /ask/stream` (NDJSON), `GET /health` and the web UI at `GET /`.
 
 Run with `uv run uvicorn t2sql.api:app --reload`.
 
@@ -7,8 +7,8 @@ Status codes:
   repair budget is spent (`error` is set, `answer` is the failure message). Both are valid
   agent outcomes for a valid request, so the client always reads one response shape and
   decides from `in_scope` / `error`. 422 is reserved for invalid requests (FastAPI default).
-- 503: no LLM provider is configured, every provider failed on this call, or the database is
-  unreachable (an outage is never sent to the repair loop).
+- 503: no LLM provider is configured, every provider failed on this call (a quota or rate
+  limit gets a specific safe message), or the database is unreachable (an outage is never sent to the repair loop).
 - 500: anything unexpected. The detail is logged; the client gets a generic message.
 
 JSON values: `Decimal` becomes a float (Chinook money is numeric(10,2), so nothing is lost
@@ -16,7 +16,10 @@ in practice; very large or high-precision values could be), dates and times beco
 strings, UUIDs and anything else unknown become strings, bytes become hex.
 """
 
+import json
 import logging
+from collections.abc import Iterator
+from pathlib import Path
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -27,17 +30,19 @@ from uuid import UUID
 
 import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, Field
 
 from t2sql.config import Settings, get_settings
 from t2sql.db import DatabaseUnavailableError
-from t2sql.graph import build_graph, run_question
+from t2sql.graph import build_graph, run_question, stream_question
 from t2sql.llm import PROVIDERS, LLMUnavailableError, build_llm
 from t2sql.schema_index import index_exists
 
 log = logging.getLogger("t2sql.api")
+
+INDEX_HTML = Path(__file__).parent / "web" / "index.html"
 
 
 # ---------------------------------------------------------------- models
@@ -179,6 +184,10 @@ def to_response(state: dict[str, Any], include_trace: bool) -> AskResponse:
 # ---------------------------------------------------------------- app
 
 
+def _error_line(status: int, detail: str) -> str:
+    return json.dumps({"type": "error", "status": status, "detail": detail}) + "\n"
+
+
 def create_app(factory: Callable[[], Runtime] = build_runtime) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -202,11 +211,49 @@ def create_app(factory: Callable[[], Runtime] = build_runtime) -> FastAPI:
             state = run_question(runtime.graph, body.question, runtime.settings)
         except LLMUnavailableError as e:
             log.error("All LLM providers failed: %s", e)
-            raise HTTPException(503, "All LLM providers failed; try again later") from e
+            raise HTTPException(503, e.public_detail) from e
         except DatabaseUnavailableError as e:
             log.error("Database unavailable: %s", e)
             raise HTTPException(503, "Database unavailable; try again later") from e
         return to_response(state, include_trace)
+
+    @app.post("/ask/stream")
+    def ask_stream(body: AskRequest, runtime: RuntimeDep) -> StreamingResponse:
+        """NDJSON: one `node` event per graph step, then one `final` or `error` event.
+
+        Errors after the response has started cannot change the HTTP status, so they are
+        sent as an `error` event carrying the status /ask would have used.
+        """
+
+        def lines() -> Iterator[str]:
+            try:
+                if runtime.graph is None:
+                    raise HTTPException(503, runtime.llm_error or "No LLM provider is available")
+                for ev in stream_question(runtime.graph, body.question, runtime.settings):
+                    if ev["type"] == "final":
+                        ev = {"type": "final", **to_response(ev["state"], False).model_dump()}
+                    yield json.dumps(json_safe(ev), ensure_ascii=False) + "\n"
+            except HTTPException as e:
+                yield _error_line(e.status_code, e.detail)
+            except LLMUnavailableError as e:
+                log.error("All LLM providers failed: %s", e)
+                yield _error_line(503, e.public_detail)
+            except DatabaseUnavailableError as e:
+                log.error("Database unavailable: %s", e)
+                yield _error_line(503, "Database unavailable; try again later")
+            except Exception:
+                log.exception("Unhandled error in /ask/stream")
+                yield _error_line(500, "Internal server error")
+
+        # A sync generator: Starlette iterates it in a threadpool, so the blocking graph
+        # calls do not stall the event loop.
+        return StreamingResponse(
+            lines(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        )
+
+    @app.get("/", include_in_schema=False)
+    def index() -> FileResponse:
+        return FileResponse(INDEX_HTML, media_type="text/html")
 
     @app.get("/health", response_model=Health)
     def health(runtime: RuntimeDep) -> Health:

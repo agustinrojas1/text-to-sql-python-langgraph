@@ -2,7 +2,8 @@ from t2sql import prompts
 from t2sql.nodes.common import Node, traced
 from t2sql.state import AgentState, Deps
 
-MAX_ROWS_FOR_LLM = 20
+# The user sees the full table; the LLM only needs a sample plus the total count to summarize.
+MAX_ROWS_FOR_LLM = 10
 
 
 def make_respond(deps: Deps) -> Node:

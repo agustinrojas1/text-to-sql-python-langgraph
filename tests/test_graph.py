@@ -64,7 +64,9 @@ def test_respond_truncates_rows_for_llm():
     rows = [{"i": i} for i in range(50)]
     llm = FakeLLM([scope(), GeneratedSql(sql="SELECT i FROM track"), "ok"])
     run(llm, Executor(QueryResult(["i"], rows)))
-    assert "first 20 of 50" in llm.calls[2].prompt and '"i": 21' not in llm.calls[2].prompt
+    prompt = llm.calls[2].prompt
+    assert "Total rows: 50" in prompt and "first 10 of them" in prompt
+    assert '"i": 9}' in prompt and '"i": 10}' not in prompt
 
 
 @pytest.mark.parametrize("lang,msg", [("en", "I can't answer that"), ("es", "No puedo responder eso")])
@@ -107,3 +109,11 @@ def test_format_schema_marks_pk_and_fk():
     text = format_schema([t])
     assert "invoice_id integer PRIMARY KEY" in text
     assert "customer_id integer REFERENCES customer(customer_id)" in text
+
+
+def test_respond_prompt_asks_for_short_summary_not_enumeration():
+    from t2sql import prompts
+
+    sys_prompt = prompts.RESPOND_SYSTEM
+    assert "1 or 2" in sys_prompt and "Never enumerate more than 3" in sys_prompt
+    assert "emails" in sys_prompt and "next to your answer" in sys_prompt

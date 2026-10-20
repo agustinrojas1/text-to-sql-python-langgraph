@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>t2sql</title>
+<style>
+:root {
+  --bg: #fafaf9; --fg: #1c1c1a; --muted: #6b6b66; --line: #e3e2de; --panel: #f1f0ed;
+  --accent: #2f5fb3; --ok: #3d7a4f; --bad: #a8412f;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #161614; --fg: #e8e7e3; --muted: #9a9993; --line: #2e2d2a; --panel: #1f1f1c;
+          --accent: #7ba3e8; --ok: #6fb085; --bad: #e08572; }
+}
+* { box-sizing: border-box; }
+html { color-scheme: light dark; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a, button.link { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.col { max-width: 760px; margin: 0 auto; padding: 0 16px; }
+header { display: flex; justify-content: space-between; gap: 12px; padding: 16px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+header .meta { color: var(--muted); text-align: right; }
+main { padding: 24px 0 170px; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+
+.empty p { margin: 0 0 12px; }
+.empty ul { list-style: none; margin: 12px 0 0; padding: 0; }
+.empty li { margin: 6px 0; }
+button.link { background: none; border: 0; padding: 0; font: inherit; cursor: pointer; text-align: left; }
+button.link:hover { text-decoration: underline; }
+
+.turn { margin-bottom: 36px; }
+.q { font-weight: 600; margin: 0 0 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.steps { list-style: none; margin: 0 0 16px; padding: 0; border-top: 1px solid var(--line); }
+.step { border-bottom: 1px solid var(--line); }
+.step summary, .step .row { display: grid; grid-template-columns: 16px 1fr auto; gap: 4px 10px; align-items: baseline; padding: 8px 0; cursor: pointer; list-style: none; }
+.step .row { cursor: default; }
+.step summary::-webkit-details-marker { display: none; }
+.mark { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--muted); align-self: center; justify-self: center; }
+.done .mark { background: var(--ok); border-color: var(--ok); }
+.failed .mark { background: var(--bad); border-color: var(--bad); }
+.running .mark { border-color: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 50% { background: var(--accent); } }
+@media (prefers-reduced-motion: reduce) { .running .mark { animation: none; background: var(--accent); } }
+.label { font-weight: 500; }
+.label .att { color: var(--muted); font-weight: 400; }
+.lat { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.detail { grid-column: 2 / 4; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.detail.clip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); font-size: 12px; }
+.failed .detail { color: var(--bad); }
+.body { padding: 2px 0 12px 26px; font-size: 13px; }
+.body pre, details.sql pre { margin: 6px 0; padding: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; font: 13px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.body dl { margin: 6px 0; display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; }
+.body dt { color: var(--muted); } .body dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+.answer { white-space: pre-wrap; margin: 0 0 16px; }
+.err { color: var(--bad); }
+.tablewrap { max-height: 330px; overflow: auto; border: 1px solid var(--line); border-radius: 4px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { padding: 6px 10px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line); }
+th { position: sticky; top: 0; background: var(--panel); font-weight: 600; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: 0; }
+.caption { margin: 6px 0 14px; color: var(--muted); font-size: 13px; }
+details.sql > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+details.sql button { margin-left: 10px; font: inherit; font-size: 13px; color: var(--accent); background: none; border: 1px solid var(--line); border-radius: 4px; padding: 1px 8px; cursor: pointer; }
+.foot { margin-top: 14px; color: var(--muted); font-size: 13px; }
+
+.composer { position: fixed; left: 0; right: 0; bottom: 0; background: var(--bg); border-top: 1px solid var(--line); padding: 12px 0 14px; }
+.composer form { display: flex; gap: 10px; align-items: flex-end; }
+textarea { flex: 1; resize: none; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 9px 11px; max-height: 140px; }
+textarea:disabled { opacity: .6; }
+.send { font: inherit; padding: 9px 16px; border-radius: 6px; border: 1px solid var(--fg); background: var(--fg); color: var(--bg); cursor: pointer; }
+.send:disabled { opacity: .4; cursor: default; }
+.hint { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="col">
+  <header>
+    <strong>t2sql</strong>
+    <span class="meta" id="meta">Chinook, PostgreSQL</span>
+  </header>
+  <main id="thread" aria-label="Conversation">
+    <div class="empty" id="empty">
+      <p>Ask a question about the Chinook music store, in English or Spanish. You can watch each step of the agent as it runs. Every question is independent: the agent does not remember earlier ones.</p>
+      <ul>
+        <li><button class="link ex">How many customers are there per country?</button></li>
+        <li><button class="link ex">¿Quiénes compraron música de Jazz?</button></li>
+        <li><button class="link ex">Top 3 artists by revenue</button></li>
+        <li><button class="link ex">Revenue per year, with the change vs the previous year</button></li>
+        <li><button class="link ex">What is the weather in Madrid today?</button></li>
+      </ul>
+    </div>
+  </main>
+</div>
+<div class="composer">
+  <div class="col">
+    <form id="form">
+      <textarea id="q" rows="1" maxlength="500" placeholder="Ask a question (each one is independent)" aria-label="Question"></textarea>
+      <button class="send" id="send" type="submit">Ask</button>
+    </form>
+    <p class="hint">Enter to send, Shift+Enter for a new line.</p>
+  </div>
+</div>
+
+<script>
+const LABELS = {
+  classify: "Classify question", retrieve_schema: "Retrieve schema", generate_sql: "Generate SQL",
+  validate_sql: "Validate SQL", execute: "Execute", repair: "Repair",
+  respond: "Answer", respond_error: "Answer", respond_out_of_scope: "Answer",
+};
+const $ = (s) => document.querySelector(s);
+const thread = $("#thread"), box = $("#q"), send = $("#send"), form = $("#form");
+let running = false;
+
+function el(tag, props = {}, ...kids) {
+  const e = Object.assign(document.createElement(tag), props);
+  for (const k of kids) if (k != null) e.append(k);
+  return e;
+}
+const ms = (v) => v == null ? "" : v >= 1000 ? (v / 1000).toFixed(1) + " s" : Math.round(v) + " ms";
+const usd = (v) => v == null ? "n/a" : "$" + (v < 0.01 ? v.toFixed(5) : v.toFixed(3));
+
+fetch("/health").then((r) => r.json()).then((h) => {
+  $("#meta").textContent = "Chinook, PostgreSQL" + (h.llm_providers.length ? " · " + h.llm_providers.join(", ") : " · no LLM configured");
+}).catch(() => {});
+
+// ---- step rows
+
+function detailLine(ev) {
+  const d = ev.data;
+  switch (ev.node) {
+    case "classify": return d.in_scope ? `in scope · ${d.language}` : `out of scope · ${d.reason}`;
+    case "retrieve_schema": {
+      const sel = d.tables.filter((t) => !d.bridges.includes(t));
+      return sel.join(", ") + (d.bridges.length ? ` +${d.bridges.length} bridge` : "");
+    }
+    case "generate_sql": return d.sql.replace(/\s+/g, " ");
+    case "validate_sql": {
+      if (!d.ok) return d.error;
+      const m = /LIMIT\s+(\d+)\s*;?\s*$/i.exec(d.sql);
+      return m ? `LIMIT ${m[1]} enforced` : "valid";
+    }
+    case "execute": return d.ok ? `${d.row_count} rows` : d.error;
+    case "repair": return `${d.kind}: ${d.error}`;
+    default: return "";
+  }
+}
+
+function bodyFor(ev) {
+  const d = ev.data, b = el("div", { className: "body" });
+  const pre = (t) => b.append(el("pre", { textContent: t }));
+  if (ev.node === "generate_sql") {
+    pre(d.sql);
+    if (d.assumptions.length) b.append(el("div", { textContent: "Assumptions: " + d.assumptions.join("; ") }));
+  } else if (ev.node === "validate_sql" && d.sql) pre(d.sql);
+  else if (ev.node === "retrieve_schema") {
+    const dl = el("dl");
+    for (const [t, s] of Object.entries(d.top_scores)) dl.append(el("dt", { textContent: t }), el("dd", { textContent: s.toFixed(3) }));
+    if (d.bridges.length) dl.append(el("dt", { textContent: "bridge tables" }), el("dd", { textContent: d.bridges.join(", ") }));
+    b.append(dl);
+  } else if (ev.node === "repair") pre(d.failed_sql);
+  if (ev.llm) {
+    b.append(el("div", { className: "muted", textContent:
+      `${ev.llm.provider} ${ev.llm.model} · ${ev.llm.input_tokens ?? "?"} in / ${ev.llm.output_tokens ?? "?"} out tokens · ${usd(ev.cost_usd)}` }));
+  }
+  return b.childNodes.length ? b : null;
+}
+
+function stepRow(ev) {
+  const failed = !!ev.error;
+  const label = el("span", { className: "label", textContent: LABELS[ev.node] || ev.node });
+  if (ev.attempt > 1 && ["generate_sql", "validate_sql", "execute"].includes(ev.node)) {
+    label.append(el("span", { className: "att", textContent: ` · attempt ${ev.attempt}` }));
+  }
+  const head = [el("span", { className: "mark" }), label, el("span", { className: "lat", textContent: ms(ev.latency_ms) }),
+                el("span", { className: "detail" + (ev.node === "generate_sql" ? " clip" : ""), textContent: detailLine(ev) })];
+  const body = bodyFor(ev);
+  const li = el("li", { className: "step " + (failed ? "failed" : "done") });
+  if (body) {
+    const sum = el("summary");
+    sum.append(...head);
+    li.append(el("details", {}, sum, body));
+  } else {
+    const row = el("div", { className: "row" });
+    row.append(...head);
+    li.append(row);
+  }
+  return li;
+}
+
+// ---- results
+
+function resultTable(cols, rows) {
+  const isNum = cols.map((c) => rows.some((r) => typeof r[c] === "number") && rows.every((r) => r[c] == null || typeof r[c] === "number"));
+  const t = el("table"), tr = el("tr");
+  cols.forEach((c, i) => tr.append(el("th", { textContent: c, className: isNum[i] ? "num" : "" })));
+  t.append(el("thead", {}, tr));
+  const tb = el("tbody");
+  for (const r of rows) {
+    const row = el("tr");
+    cols.forEach((c, i) => row.append(el("td", { textContent: r[c] ?? "", className: isNum[i] ? "num" : "" })));
+    tb.append(row);
+  }
+  t.append(tb);
+  return el("div", { className: "tablewrap", tabIndex: 0 }, t);
+}
+
+function renderFinal(turn, f) {
+  turn.append(el("p", { className: "answer" + (f.error ? " err" : ""), textContent: f.answer }));
+  if (f.columns.length && f.rows.length) {
+    turn.append(resultTable(f.columns, f.rows));
+    turn.append(el("p", { className: "caption", textContent: `${f.row_count} row${f.row_count === 1 ? "" : "s"}` }));
+  }
+  if (f.sql) {
+    const copy = el("button", { type: "button", textContent: "Copy" });
+    copy.onclick = async (e) => {
+      e.preventDefault();
+      try { await navigator.clipboard.writeText(f.sql); copy.textContent = "Copied"; } catch { copy.textContent = "Copy failed"; }
+      setTimeout(() => (copy.textContent = "Copy"), 1500);
+    };
+    const d = el("details", { className: "sql" }, el("summary", { textContent: "SQL" }), el("pre", { textContent: f.sql }));
+    d.querySelector("summary").append(copy);
+    turn.append(d);
+  }
+  const s = f.summary;
+  const bits = [`${ms(s.latency_ms)}`, `${s.llm_calls} LLM calls`, `${s.input_tokens} in / ${s.output_tokens} out tokens`, usd(s.cost_usd)];
+  if (s.repaired) bits.push("repaired");
+  turn.append(el("p", { className: "foot", textContent: bits.join(" · ") }));
+}
+
+// ---- running a question
+
+async function ask(question) {
+  running = true; box.disabled = send.disabled = true;
+  $("#empty")?.remove();
+  const turn = el("section", { className: "turn" });
+  const steps = el("ol", { className: "steps" });
+  steps.setAttribute("aria-live", "polite");
+  const pending = el("li", { className: "step running" }, el("div", { className: "row" },
+    el("span", { className: "mark" }), el("span", { className: "label muted", textContent: "Running…" })));
+  steps.append(pending);
+  turn.append(el("p", { className: "q", textContent: question }), steps);
+  thread.append(turn);
+  turn.scrollIntoView({ block: "start" });
+
+  const fail = (msg) => turn.append(el("p", { className: "err", textContent: msg }));
+  const handle = (ev) => {
+    if (ev.type === "node") steps.insertBefore(stepRow(ev), pending);
+    else if (ev.type === "final") { pending.remove(); renderFinal(turn, ev); }
+    else if (ev.type === "error") { pending.remove(); fail(ev.detail); }
+  };
+  try {
+    const res = await fetch("/ask/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question }) });
+    if (!res.ok) {
+      pending.remove();
+      let d = res.statusText;
+      try { const j = await res.json(); d = typeof j.detail === "string" ? j.detail : "Invalid request"; } catch {}
+      fail(`Request failed (${res.status}): ${d}`);
+    } else {
+      const reader = res.body.getReader(), dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        buf += dec.decode(value || new Uint8Array(), { stream: !done });
+        let i;
+        while ((i = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+          if (line) handle(JSON.parse(line));
+        }
+        if (done) break;
+      }
+      if (buf.trim()) handle(JSON.parse(buf));
+    }
+  } catch (e) {
+    fail("Connection problem: " + (e.message || e));
+  } finally {
+    pending.remove();
+    running = false; box.disabled = send.disabled = false; box.focus();
+  }
+}
+
+function submit() {
+  const q = box.value.trim();
+  if (!q || running) return;
+  box.value = ""; box.style.height = "auto";
+  ask(q);
+}
+form.addEventListener("submit", (e) => { e.preventDefault(); submit(); });
+box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); } });
+box.addEventListener("input", () => { box.style.height = "auto"; box.style.height = Math.min(box.scrollHeight, 140) + "px"; });
+document.querySelectorAll(".ex").forEach((b) => b.addEventListener("click", () => ask(b.textContent)));
+</script>
+</body>
+</html>

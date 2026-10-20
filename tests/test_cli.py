@@ -106,10 +106,19 @@ def test_ask_database_outage_exits_1_with_clear_message(patched):
     assert "Database unavailable: connection refused" in r.output
 
 
-def test_ask_other_exception_exits_1(patched):
-    patched["raises"] = LLMUnavailableError("All LLM providers failed")
+def test_ask_llm_unavailable_exits_1_with_public_message(patched):
+    patched["raises"] = LLMUnavailableError(
+        "All LLM providers failed:\ngemini: key=AIza-secret", public_detail="LLM quota or rate limit exceeded for gemini"
+    )
     r = runner.invoke(cli.app, ["ask", "q"])
-    assert r.exit_code == 1 and "LLMUnavailableError: All LLM providers failed" in r.output
+    assert r.exit_code == 1 and "LLM quota or rate limit exceeded for gemini" in r.output
+    assert "AIza" not in r.output
+
+
+def test_ask_other_exception_exits_1(patched):
+    patched["raises"] = RuntimeError("boom")
+    r = runner.invoke(cli.app, ["ask", "q"])
+    assert r.exit_code == 1 and "RuntimeError: boom" in r.output
 
 
 def test_error_messages_are_not_interpreted_as_rich_markup(patched):

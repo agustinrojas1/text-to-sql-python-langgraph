@@ -9,7 +9,7 @@ from t2sql.api import Runtime, _db_reachable, build_runtime, create_app, json_sa
 from t2sql.config import Settings, get_settings
 from t2sql.db import ColumnInfo, QueryResult, TableInfo
 from t2sql.graph import build_graph
-from t2sql.llm import LLMUnavailableError
+from t2sql.llm import ChatModelLLM, FallbackLLM
 from t2sql.nodes.classify import ScopeDecision
 from t2sql.nodes.generate import GeneratedSql
 from t2sql.schema_index import index_exists
@@ -116,11 +116,57 @@ def test_build_runtime_without_keys_does_not_raise(monkeypatch):
     assert rt.graph is None and "No LLM provider" in rt.llm_error and rt.llm_providers == []
 
 
+class _ErrChat:
+    """Chat model whose every call raises `error` (as the SDK would after its own retries)."""
+
+    def __init__(self, error):
+        self.error = error
+
+    def invoke(self, messages):
+        raise self.error
+
+    def with_structured_output(self, schema, **kw):
+        return self
+
+
+def failing_llm(error, provider="gemini"):
+    # One provider, as built by build_llm: it must still be wrapped in a FallbackLLM.
+    return FallbackLLM([ChatModelLLM(provider, "m", _ErrChat(error), parse_retries=0)])
+
+
+def google_429():
+    from google.genai.errors import ClientError
+    from langchain_google_genai.chat_models import GoogleRateLimitError
+
+    err = GoogleRateLimitError("429 RESOURCE_EXHAUSTED: quota key=AIza-secret")
+    err.__cause__ = ClientError(429, {"error": {"status": "RESOURCE_EXHAUSTED"}})
+    return err
+
+
+QUOTA_MSG = (
+    "LLM quota or rate limit exceeded for gemini; try again later or configure another "
+    "provider (T2SQL_LLM_PROVIDERS)"
+)
+
+
 def test_all_providers_failing_at_call_time_is_503():
-    llm = FakeLLM([LLMUnavailableError("All LLM providers failed:\ngemini: secret-ish detail")])
-    with make_client(llm) as c:
+    with make_client(failing_llm(TimeoutError("gemini: secret-ish detail"))) as c:
         r = c.post("/ask", json={"question": "How many customers?"})
     assert r.status_code == 503 and "secret-ish" not in r.text
+    assert r.json() == {"detail": "All LLM providers failed; try again later"}
+
+
+def test_single_provider_quota_is_503_with_specific_safe_message():
+    with make_client(failing_llm(google_429())) as c:
+        r = c.post("/ask", json={"question": "How many customers?"})
+    assert r.status_code == 503 and r.json() == {"detail": QUOTA_MSG}
+    assert "AIza" not in r.text and "RESOURCE_EXHAUSTED" not in r.text
+
+
+def test_stream_quota_is_error_event_with_same_status_and_detail():
+    with make_client(failing_llm(google_429())) as c:
+        evs = ndjson(c.post("/ask/stream", json={"question": "q"}))
+    assert evs == [{"type": "error", "status": 503, "detail": QUOTA_MSG}]
 
 
 def test_database_outage_is_503_and_not_repaired():
@@ -191,3 +237,108 @@ def test_health_against_real_database():
     with TestClient(create_app(lambda: rt)) as c:
         h = c.get("/health").json()
     assert h["database"] is True and h["schema_index"] is True and h["status"] == "ok"
+
+
+# ---------------------------------------------------------------- streaming and UI
+
+
+def ndjson(r):
+    assert r.headers["content-type"].startswith("application/x-ndjson")
+    return [json.loads(line) for line in r.text.splitlines()]
+
+
+def test_stream_happy_path_events_in_order():
+    with make_client(happy_llm(), QueryResult(["n"], [{"n": 59}])) as c:
+        r = c.post("/ask/stream", json={"question": "How many customers?"})
+    evs = ndjson(r)
+    assert [e["type"] for e in evs] == ["node"] * 6 + ["final"]
+    assert [e["node"] for e in evs[:-1]] == [
+        "classify", "retrieve_schema", "generate_sql", "validate_sql", "execute", "respond",
+    ]
+    by = {e["node"]: e for e in evs[:-1]}
+    assert by["classify"]["data"] == {"in_scope": True, "language": "en", "reason": "r"}
+    assert by["classify"]["llm"]["model"] == "fake-model" and by["classify"]["cost_usd"] is None
+    assert by["retrieve_schema"]["data"]["tables"] == ["customer"]
+    assert by["generate_sql"]["data"]["sql"] == "SELECT count(*) AS n FROM customer"
+    assert by["validate_sql"]["data"]["ok"] and "LIMIT 100" in by["validate_sql"]["data"]["sql"].upper()
+    assert by["execute"]["data"] == {"ok": True, "error": None, "row_count": 1}
+    assert by["respond"]["data"] == {"answer": "There are 59 customers."}
+    assert all(e["attempt"] >= 0 and e["latency_ms"] >= 0 for e in evs[:-1])
+    f = evs[-1]
+    assert f["answer"] == "There are 59 customers." and f["rows"] == [{"n": 59}] and f["row_count"] == 1
+    assert f["columns"] == ["n"] and f["summary"]["llm_calls"] == 3
+
+
+def test_stream_repair_path():
+    llm = FakeLLM([
+        scope(),
+        GeneratedSql(sql="DELETE FROM customer"),
+        GeneratedSql(sql="SELECT count(*) AS n FROM customer"),
+        "59.",
+    ])
+    with make_client(llm, QueryResult(["n"], [{"n": 59}])) as c:
+        evs = ndjson(c.post("/ask/stream", json={"question": "How many customers?"}))
+    nodes = [e["node"] for e in evs if e["type"] == "node"]
+    assert nodes == [
+        "classify", "retrieve_schema", "generate_sql", "validate_sql", "repair",
+        "generate_sql", "validate_sql", "execute", "respond",
+    ]
+    bad = evs[3]
+    assert bad["error"] and bad["data"]["ok"] is False and bad["data"]["sql"] is None
+    assert evs[4]["data"]["kind"] == "guard" and evs[4]["data"]["failed_sql"] == "DELETE FROM customer"
+    assert [e["attempt"] for e in evs if e.get("node") == "generate_sql"] == [1, 2]
+    assert evs[-1]["type"] == "final" and evs[-1]["summary"]["repaired"] is True
+
+
+def test_stream_out_of_scope():
+    with make_client(FakeLLM([scope(False, "es")])) as c:
+        evs = ndjson(c.post("/ask/stream", json={"question": "¿Qué clima hace?"}))
+    assert [e.get("node") for e in evs] == ["classify", "respond_out_of_scope", None]
+    assert evs[0]["data"]["in_scope"] is False and evs[0]["data"]["language"] == "es"
+    assert evs[1]["data"]["answer"].startswith("No puedo responder eso")
+    assert evs[2]["type"] == "final" and evs[2]["in_scope"] is False and evs[2]["sql"] is None
+
+
+def test_stream_exhausted_repairs_ends_with_final_error():
+    llm = FakeLLM([scope(), GeneratedSql(sql="DELETE FROM track"), GeneratedSql(sql="DROP TABLE track")])
+    with make_client(llm, settings=ONE_REPAIR) as c:
+        evs = ndjson(c.post("/ask/stream", json={"question": "Delete tracks"}))
+    assert evs[-2]["node"] == "respond_error" and evs[-1]["type"] == "final" and evs[-1]["error"]
+
+
+def test_stream_no_llm_is_error_event():
+    with make_client(None, llm_error="No LLM provider is available: missing key") as c:
+        r = c.post("/ask/stream", json={"question": "How many customers?"})
+    assert ndjson(r) == [{"type": "error", "status": 503, "detail": "No LLM provider is available: missing key"}]
+
+
+def test_stream_errors_become_error_events():
+    from t2sql.db import DatabaseUnavailableError
+
+    with make_client(failing_llm(TimeoutError("gemini: secret-ish"))) as c:
+        evs = ndjson(c.post("/ask/stream", json={"question": "q"}))
+    assert evs == [{"type": "error", "status": 503, "detail": "All LLM providers failed; try again later"}]
+
+    llm = FakeLLM([scope(), GeneratedSql(sql="SELECT 1 FROM customer")])
+    with make_client(llm, error=DatabaseUnavailableError("refused 10.0.0.5")) as c:
+        evs = ndjson(c.post("/ask/stream", json={"question": "q"}))
+    assert evs[-1] == {"type": "error", "status": 503, "detail": "Database unavailable; try again later"}
+    assert [e["node"] for e in evs[:-1]] == ["classify", "retrieve_schema", "generate_sql", "validate_sql"]
+
+    llm = FakeLLM([scope(), GeneratedSql(sql="SELECT 1 FROM customer")])
+    with make_client(llm, error=RuntimeError("boom password=hunter2")) as c:
+        r = c.post("/ask/stream", json={"question": "q"})
+    assert ndjson(r)[-1] == {"type": "error", "status": 500, "detail": "Internal server error"}
+    assert "hunter2" not in r.text
+
+
+def test_stream_invalid_question_is_422():
+    with make_client(happy_llm()) as c:
+        assert c.post("/ask/stream", json={"question": ""}).status_code == 422
+
+
+def test_root_serves_the_ui():
+    with make_client(None) as c:
+        r = c.get("/")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
+    assert "/ask/stream" in r.text and "<title>t2sql</title>" in r.text
