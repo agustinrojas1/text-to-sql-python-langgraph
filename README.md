@@ -483,8 +483,8 @@ tests/
 ## Testing
 
 ```bash
-uv run pytest                    # 534 tests
-uv run pytest -m "not integration"   # 444 tests, no database needed
+uv run pytest                    # 635 tests
+uv run pytest -m "not integration"   # 545 tests, no database needed
 ```
 
 Tests marked `integration` need `docker compose up -d` and are skipped automatically if
