@@ -6,6 +6,7 @@ from typing import Annotated, Any
 
 import typer
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.markup import escape
 from rich.syntax import Syntax
 from rich.table import Table
@@ -27,7 +28,7 @@ err = Console(stderr=True)
 
 
 CLASSIFIER_HELP = "Scope classifier for this question: llm, local or cascade (default: T2SQL_CLASSIFIER)"
-LOCAL_MODEL_HELP = "Local model for local/cascade: tev1 or d1 (default: T2SQL_LOCAL_CLASSIFIER_MODEL)"
+LOCAL_MODEL_HELP = "Local model for local/cascade: tev1 (default: T2SQL_LOCAL_CLASSIFIER_MODEL)"
 
 
 def _one_of(name: str, allowed: tuple[str, ...]) -> Callable[[str], str]:
@@ -40,7 +41,7 @@ def _one_of(name: str, allowed: tuple[str, ...]) -> Callable[[str], str]:
 
 
 _check_classifier = _one_of("classifier", ("llm", "local", "cascade"))
-_check_local_model = _one_of("local model", ("tev1", "d1"))
+_check_local_model = _one_of("local model", ("tev1",))
 
 
 def _overrides(classifier: str, local_model: str) -> dict[str, str]:
@@ -145,7 +146,10 @@ def ask(
         raise typer.Exit(1) from e
 
     # Text from the LLM or Postgres may contain "[...]", which rich would read as markup.
-    console.print(f"\n[bold]{escape(state['answer'])}[/]\n")
+    # Markdown (not markup) renders **bold** without printing the asterisks and keeps "[...]" literal.
+    console.print()
+    console.print(Markdown(state["answer"]))
+    console.print()
     if state.get("sql"):
         console.print(Syntax(state["sql"], "sql", theme="ansi_dark", word_wrap=True))
     if state.get("rows") is not None:

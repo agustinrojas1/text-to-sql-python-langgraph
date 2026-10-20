@@ -247,8 +247,7 @@ textarea:disabled { opacity: .6; }
         <button type="button" role="radio" data-mode="cascade" aria-checked="false" title="Local model first, cloud LLM when it is unsure">Cascade</button>
         <button type="button" role="radio" data-mode="local" aria-checked="false" title="Local model only (cloud LLM only if it is unreachable)">Local</button>
       </div>
-      <select id="modelsel" aria-label="Local model" hidden></select>
-      <span class="note" id="modenote" hidden></span>
+          <span class="note" id="modenote" hidden></span>
     </div>
     <form id="form">
       <textarea id="q" rows="1" maxlength="500" placeholder="Ask a question (each one is independent)" aria-label="Question"></textarea>
@@ -271,8 +270,7 @@ const fmtInt = (n) => (typeof n === "number" && isFinite(n) ? n.toLocaleString("
 const ms = (v) => (v == null ? "" : v >= 1000 ? (v / 1000).toFixed(1) + " s" : Math.round(v) + " ms");
 const usd = (v) => (v == null ? "n/a" : "$" + (v < 0.01 ? v.toFixed(5) : v.toFixed(3)));
 const MODE_NAMES = { llm: "LLM", cascade: "Cascade", local: "Local" };
-const MODEL_NAMES = { tev1: "Tev1", d1: "d1" };
-/** "LLM", "Cascade · tev1", "Local · d1": the scope-check mode of a request or of a classify event. */
+/** "LLM", "Cascade · tev1", "Local · tev1": the scope-check mode of a request or of a classify event. */
 const modeLabel = (mode, model) => (MODE_NAMES[mode] ? MODE_NAMES[mode] + (mode !== "llm" && model ? " · " + model : "") : "");
 const modeText = (mode, model) => (mode === "llm" ? "cloud LLM only" : modeLabel(mode, model).toLowerCase());
 const plural = (n, word) => `${fmtInt(n)} ${word}${n === 1 ? "" : "s"}`;
@@ -388,36 +386,29 @@ function el(tag, props = {}, ...kids) {
 const tx = (tag, className, textContent) => el(tag, { className, textContent });
 
 let health = null;           // last /health body
-const sel = { classifier: null, model: null };  // the user's choice; null = the server's default
-try { sel.classifier = localStorage.getItem("t2sql.classifier"); sel.model = localStorage.getItem("t2sql.localModel"); } catch {}
+const sel = { classifier: null };  // the user's choice; null = the server's default
+try { sel.classifier = localStorage.getItem("t2sql.classifier"); } catch {}
 if (!MODE_NAMES[sel.classifier]) sel.classifier = null;
-if (!MODEL_NAMES[sel.model]) sel.model = null;
 const curMode = () => sel.classifier ?? health?.classifier ?? "llm";
-const curModel = () => sel.model ?? health?.local_model ?? "tev1";
-/** Is this model's llama-server reachable? Unknown (no /health yet) counts as up. */
-const modelUp = (m) => obj(health?.local_models)[m] !== false;
+const curModel = () => health?.local_model ?? "tev1";  // Tev1 is the only local model
+/** Is Tev1's llama-server reachable? Unknown (no /health yet) counts as up. */
+const modelUp = () => obj(health?.local_models)[curModel()] !== false;
 
 function renderMode() {
-  const mode = curMode(), model = curModel();
+  const mode = curMode();
   for (const b of document.querySelectorAll("#modeseg button")) b.setAttribute("aria-checked", String(b.dataset.mode === mode));
-  const ms_ = $("#modelsel");
-  ms_.hidden = mode === "llm";
-  ms_.replaceChildren(...Object.entries(MODEL_NAMES).map(([k, name]) =>
-    el("option", { value: k, selected: k === model, textContent: name + (modelUp(k) ? "" : " (offline)") })));
   const note = $("#modenote");
   let text = "";
-  if (mode !== "llm" && !modelUp(model)) text = `${model} is offline: the cloud LLM will classify instead.`;
+  if (mode !== "llm" && !modelUp()) text = `Tev1 is offline: the cloud LLM will classify instead.`;
   if (health?.replay) text += (text ? " " : "") + "Replay: only questions recorded in this mode replay; others run live.";
   note.textContent = text; note.hidden = !text;
 }
-function chooseMode(mode, model) {
+function chooseMode(mode) {
   if (mode) sel.classifier = mode;
-  if (model) sel.model = model;
-  try { localStorage.setItem("t2sql.classifier", curMode()); localStorage.setItem("t2sql.localModel", curModel()); } catch {}
+  try { localStorage.setItem("t2sql.classifier", curMode()); } catch {}
   renderMode();
 }
 document.querySelectorAll("#modeseg button").forEach((b) => b.addEventListener("click", () => chooseMode(b.dataset.mode)));
-$("#modelsel").addEventListener("change", (e) => chooseMode(null, e.target.value));
 
 function loadHealth() {
   return fetch("/health").then((r) => r.json()).then((h) => {
@@ -642,6 +633,17 @@ function finishPanel(turn, p, ev, failed) {
 }
 
 /* ----- per-group renderers: fill panel.content from the node event ----- */
+// CLASSIFY_SUMMARY_START
+/** One-line "who decided" text for the classify step. */
+function classifySummary(d) {
+  const m = d.local_model ?? "", pn = d.p_in != null && Number.isFinite(Number(d.p_in)) ? Number(d.p_in) : null;
+  if (d.decided_by === "local") return `local ${m || "model"}` + (pn != null ? ` p=${pn.toFixed(2)}` : "");
+  if (d.local_unavailable) return `${m || "local"} offline \u2192 cloud LLM`;
+  if (d.decided_by === "llm" && pn != null) return `${m || "local"} unsure (p=${pn.toFixed(2)}) \u2192 cloud LLM`;
+  return "cloud LLM";
+}
+// CLASSIFY_SUMMARY_END
+
 const RENDER = {};
 
 RENDER.classify = (turn, p, ev, d) => {
@@ -661,7 +663,7 @@ RENDER.classify = (turn, p, ev, d) => {
   if (d.reason) p.content.append(tx("p", "lead muted", String(d.reason)));
   if (MODE_NAMES[d.classifier]) turn.modeEl.textContent = "Scope check: " + modeText(d.classifier, d.local_model);
   p.line.textContent = [inScope === true ? "in scope" : inScope === false ? "out of scope" : "", lang,
-    d.decided_by === "local" ? `local ${d.local_model ?? "model"}` : d.local_unavailable ? `${d.local_model ?? "local"} offline \u2192 cloud LLM` : "cloud LLM"].filter(Boolean).join(" · ");
+    classifySummary(d)].filter(Boolean).join(" · ");
   if (inScope === false) for (const g of ["retrieve", "generate", "validate", "execute"]) turn.chips[g].li.hidden = true;
 };
 
@@ -907,14 +909,32 @@ RENDER.repair = (turn, p, ev, d) => {
   }
 };
 
+/* ---- answer formatter (pure; tested by tests/test_answer_format.py via node) ----
+ * Escapes HTML first, then turns **x** / __x__ into <strong>, *x* into <em> and `x` into <code>,
+ * only when the pair is closed and clearly delimited (2*3 and customer_id stay literal).
+ * Unclosed markers stay literal, so re-rendering partial streamed text never yields broken HTML. */
+// FORMAT_ANSWER_START
+function formatAnswer(text) {
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  return String(text ?? "").split(/(`[^`\n]+`)/).map((part, i) => {
+    if (i % 2) return "<code>" + esc(part.slice(1, -1)) + "</code>";
+    return esc(part)
+      .replace(/(?<![\w*])\*\*(?=\S)([^\n]+?)(?<=\S)\*\*(?![\w*])/g, "<strong>$1</strong>")
+      .replace(/(?<![\w_])__(?=\S)([^\n]+?)(?<=\S)__(?![\w_])/g, "<strong>$1</strong>")
+      .replace(/(?<![\w*])\*(?=[^\s*])([^*\n]+?)(?<=[^\s*])\*(?![\w*])/g, "<em>$1</em>");
+  }).join("");
+}
+// FORMAT_ANSWER_END
+
 function ensureAnswerEl(p) {
   if (!p.answerEl) { p.answerEl = tx("p", "answer", ""); p.content.prepend(p.answerEl); }
   return p.answerEl;
 }
 RENDER.answer = (turn, p, ev, d) => {
   const a = ensureAnswerEl(p);
-  if (typeof d.answer === "string") a.textContent = d.answer;
-  p.line.textContent = String(d.answer ?? "").replace(/\s+/g, " ").slice(0, 140);
+  if (typeof d.answer === "string") a.innerHTML = formatAnswer(d.answer);
+  p.line.textContent = String(d.answer ?? "").replace(/\*\*|__|`/g, "").replace(/\s+/g, " ").slice(0, 140);
 };
 
 /* =====================================================================
@@ -964,7 +984,7 @@ function onToken(turn, ev) {
     if (!p) return;
     p.status.hidden = true;
     const a = ensureAnswerEl(p);
-    a.textContent = d.text;
+    a.innerHTML = formatAnswer(d.text);
     a.append(caret());
     follow(p);
   }
@@ -990,7 +1010,7 @@ function onFinal(turn, f) {
   if (!p.finished) finishPanel(turn, p, {}, false);
   const a = ensureAnswerEl(p);
   p.root.querySelectorAll(".caret").forEach((c) => c.remove());
-  if (typeof f.answer === "string") a.textContent = f.answer;
+  if (typeof f.answer === "string") a.innerHTML = formatAnswer(f.answer);
   a.className = "answer" + (f.error ? " err" : "");
   const c = p.content, cols = arr(f.columns).map(String), rows = arr(f.rows);
   if (cols.length && rows.length) {
@@ -1078,7 +1098,6 @@ async function ask(question) {
   const mode = curMode(), model = curModel();
   const body = { question };
   if (sel.classifier) body.classifier = sel.classifier;
-  if (sel.model && mode !== "llm") body.local_model = sel.model;
   turn.modeEl.textContent = "Scope check: " + modeText(mode, model);
 
   const line = (s) => {

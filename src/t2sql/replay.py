@@ -1,7 +1,7 @@
 """Record and replay of `/ask/stream` runs, so a demo works without network or LLM.
 
 A recording is `<dir>/<slug>-<hash>-<variant>.ndjson`, one file per normalised question and
-classifier variant ("llm", "local-tev1", "cascade-d1"...), overwritten on every new recording.
+classifier variant ("llm", "local-tev1", "cascade-tev1"...), overwritten on every new recording.
 Its first line is a header naming the normalised question and the variant (so a slug collision
 or a different mode can never replay the wrong run); every other line wraps one event line
 exactly as it was sent to the client:

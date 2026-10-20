@@ -13,7 +13,7 @@ from t2sql.retrieval import SchemaRetriever
 
 
 ClassifierMode = Literal["llm", "local", "cascade"]
-LocalModel = Literal["tev1", "d1"]
+LocalModel = Literal["tev1"]
 
 
 class AgentState(TypedDict, total=False):

@@ -61,7 +61,8 @@ any notable caveat.
 - Use only the data shown; do not invent numbers. If the result is empty, say that no data matched.
 - You may be given only a sample of the rows; the total row count is stated. If the result is
   larger than the sample, mention that the table next to the answer has the full list.
-- Do not repeat the SQL."""
+- Do not repeat the SQL.
+- Write plain text only: no Markdown (no **bold**, no *italics*, no bullets, no headings, no backticks)."""
 
 OUT_OF_SCOPE = {
     "en": "I can't answer that with this database.",
@@ -101,21 +102,6 @@ def tev1_prompt(question: str, tables: list[str], swap: bool = False) -> str:
         f"<|im_start|>system\n{TEV1_SYSTEM}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n"
         "<|im_start|>assistant\n<think>\n\n</think>\n\n"
     )
-
-
-def d1_request(question: str, tables: list[str]) -> dict[str, Any]:
-    """Body for llama-server's /v1/systemone (LiquidAI d1-3B): one `choice` question."""
-    instructions = local_scope_context(tables) + "\n\nCan the user's question be answered by querying this database?"
-    return {
-        "state": question,
-        "questions": {
-            "scope": {
-                "type": "choice",
-                "instructions": instructions,
-                "criteria": {"in_scope": SCOPE_IN, "out_of_scope": SCOPE_OUT},
-            }
-        },
-    }
 
 
 def generate_messages(question: str, schema: str) -> list[Message]:

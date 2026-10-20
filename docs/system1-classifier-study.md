@@ -6,6 +6,8 @@ failed, what was picked and why, and what is still unsolved. Dates are 2026-10-1
 2026-10-20. Every number below comes from a run I did; the sets are small and hand-written,
 so read differences of a few questions as noise (details in section 8).
 
+Update 2026-10-20: after this evaluation, d1 support was removed from the code; Tev1 is the only local model. The history below is kept as written.
+
 Vocabulary: "System 1" is a cheap, fast local model that answers when it is sure;
 "System 2" is the cloud LLM that is asked only for the hard cases. "OOS" means out of scope
 (the database cannot answer the question). "FR" is false rejection: an answerable question

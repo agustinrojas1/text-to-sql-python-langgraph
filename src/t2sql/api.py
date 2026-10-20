@@ -55,7 +55,7 @@ class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=500)
     # Per-request override of T2SQL_CLASSIFIER / T2SQL_LOCAL_CLASSIFIER_MODEL (None = server settings).
     classifier: Literal["llm", "local", "cascade"] | None = None
-    local_model: Literal["tev1", "d1"] | None = None
+    local_model: Literal["tev1"] | None = None
 
 
 class Summary(BaseModel):
@@ -94,7 +94,7 @@ class Health(BaseModel):
     # without it the cloud LLM classifies, so the service still works.
     local_classifier: bool | None
     local_model: str  # the server's default local model (T2SQL_LOCAL_CLASSIFIER_MODEL)
-    # Reachability of each model's llama-server, e.g. {"tev1": true, "d1": false}; {} if not checked.
+    # Reachability of each model's llama-server, e.g. {"tev1": true}; {} if not checked.
     # Probed in parallel with a short timeout. A down model never degrades `status`: requests
     # that pick it fall back to the cloud LLM.
     local_models: dict[str, bool] = {}
@@ -293,7 +293,7 @@ def create_app(factory: Callable[[], Runtime] = build_runtime) -> FastAPI:
         - `final` (the AskResponse) or `error`, always last.
 
         The body may carry `classifier` ("llm" | "local" | "cascade") and `local_model`
-        ("tev1" | "d1") to override the server's settings for this question; the classify
+        ("tev1") to override the server's settings for this question; the classify
         `node` event reports what was used (`classifier`, `local_model`, `decided_by`).
 
         Clients must ignore event types and keys they do not know. Errors after the response has started cannot change the HTTP status, so they are

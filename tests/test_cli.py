@@ -139,6 +139,13 @@ def test_answer_and_trace_errors_are_escaped(patched):
     assert "[genre]" in r.output and "[/bold]" in r.output and "[x]" in r.output
 
 
+def test_answer_markdown_bold_is_rendered_without_asterisks(patched):
+    patched["state"] = ok_state(answer="El artista es **U2** con **15.84** en ventas.")
+    r = runner.invoke(cli.app, ["ask", "q"])
+    assert r.exit_code == 0
+    assert "U2" in r.output and "15.84" in r.output and "**" not in r.output
+
+
 def test_index_wiring(monkeypatch):
     seen = {}
 

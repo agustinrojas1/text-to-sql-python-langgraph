@@ -155,13 +155,13 @@ Each question is independent: there is no conversation memory.
 
 Next to the composer there is a selector for how the scope check runs, per question:
 `LLM` (cloud only), `Cascade` (local model first, cloud for the uncertain band) and `Local`
-(local model only). With Cascade or Local a second select picks the local model (Tev1 or d1).
-The choice is remembered in the browser; options whose local server is not reachable say
-"offline" (they still work: the request falls back to the cloud LLM and the classify step says
-"local tev1 unavailable → cloud LLM"). Each turn shows which mode and model it used. The same
+(local model only; the local model is always Tev1). The choice is remembered in the browser;
+if the Tev1 server is not reachable the page says so (it still works: the request falls back to
+the cloud LLM and the classify step says "local tev1 unavailable → cloud LLM"). Each turn shows
+which mode and model it used. The same
 choice is available over HTTP and on the command line: `/ask` and `/ask/stream` accept
-`"classifier": "llm" | "local" | "cascade"` and `"local_model": "tev1" | "d1"` in the body
-(default: the server settings), and `t2sql ask --classifier cascade --local-model d1`.
+`"classifier": "llm" | "local" | "cascade"` and `"local_model": "tev1"` in the body
+(default: the server settings), and `t2sql ask --classifier cascade`.
 
 ## Demo without network
 
@@ -209,16 +209,14 @@ of a locally decided question (needed for the refusal message) comes from a smal
 heuristic (`detect_language`: `¿ ¡ ñ` and English/Spanish function words, including
 rioplatense forms such as "tenés" or "mostrame").
 
-Two models are supported, both GGUF files served by llama.cpp's `llama-server`
-(`T2SQL_LOCAL_CLASSIFIER_MODEL`). The default and the recommended one is `tev1`:
+The local model is Tev1-4B-experimental, a GGUF file served by llama.cpp's `llama-server`
+(`T2SQL_LOCAL_CLASSIFIER_MODEL=tev1`, the only value), queried through `/completion`. P(in
+scope) is the probability of the option letter A against B, averaged over two requests with the
+options in both orders (this cancels position bias, and is exactly what was benchmarked).
+LiquidAI d1-3B was also evaluated and rejected (it separates worse on the adversarial set); its
+support was removed from the code, see [docs/system1-classifier-study.md](docs/system1-classifier-study.md).
 
-- `tev1`: Tev1-4B-experimental, queried through `/completion`. P(in scope) is the
-  probability of the option letter A against B, averaged over two requests with the options
-  in both orders (this cancels position bias, and is exactly what was benchmarked).
-- `d1`: LiquidAI d1-3B, queried through `/v1/systemone` with a `choice` question. Supported,
-  but not recommended: it separates worse on the adversarial set (see the ADR).
-
-Setup for `tev1` (about 3 GB of VRAM; tested with an 8 GB NVIDIA GPU):
+Setup (about 3 GB of VRAM; tested with an 8 GB NVIDIA GPU):
 
 ```bash
 # 1. llama.cpp with CUDA (or download a prebuilt release from github.com/ggml-org/llama.cpp/releases
@@ -242,32 +240,18 @@ curl -L -o ~/.cache/t2sql/models/Tev1-4B-GGUF/togethercomputer_Tev1-4B-experimen
 T2SQL_CLASSIFIER=cascade uv run t2sql ask -v "How many customers?"
 ```
 
-**Both models in the web UI.** One llama-server serves one model, so each model has its own
-port: Tev1 on 8090 (`T2SQL_TEV1_URL`) and d1 on 8091 (`T2SQL_D1_URL`). Start whichever you want
-to offer (the UI marks the other "offline"):
-
-```bash
-LS=~/.cache/t2sql/llama.cpp/build/bin/llama-server
-$LS -m ~/.cache/t2sql/models/Tev1-4B-GGUF/togethercomputer_Tev1-4B-experimental-Q4_K_M.gguf \
-    -ngl 99 -c 2048 -np 1 --host 127.0.0.1 --port 8090 &      # ~3 GB VRAM
-$LS -m ~/.cache/t2sql/models/d1-3B-GGUF/d1-3B-Q4_K_M.gguf \
-    -ngl 99 -c 2048 -np 1 --host 127.0.0.1 --port 8091 &      # ~2 GB VRAM
-uv run uvicorn t2sql.api:app                                  # pick the mode and model in the page
-```
-
-`T2SQL_LOCAL_CLASSIFIER_URL` still works: when set, it overrides the URL of the default model
-(`T2SQL_LOCAL_CLASSIFIER_MODEL`) only; the other model keeps its own `T2SQL_TEV1_URL` /
-`T2SQL_D1_URL`. `/health` adds `local_models` (`{"tev1": true, "d1": false}`) and `local_model`
-(the default).
+For the web UI, start the Tev1 server as above and run `uv run uvicorn t2sql.api:app`; pick the
+mode in the page. `T2SQL_TEV1_URL` (default `http://127.0.0.1:8090`) sets its address;
+`T2SQL_LOCAL_CLASSIFIER_URL` is the older name and, when set, takes precedence. `/health` adds
+`local_models` (`{"tev1": true}`) and `local_model` (`"tev1"`).
 
 **License caveat**: the Tev1-4B-experimental model card says the license of the fine-tuned
 weights "is being finalized" (the base model, Qwen3.5-4B, is Apache-2.0). Treat it as
-experimental until that is settled; the repository does not bundle it. d1-3B is under the
-LFM Open License v1.0.
+experimental until that is settled; the repository does not bundle it.
 
 Settings (see `.env.example`): `T2SQL_LOCAL_CLASSIFIER_MODEL` (`tev1`),
-`T2SQL_TEV1_URL` (default `http://127.0.0.1:8090`), `T2SQL_D1_URL` (default `http://127.0.0.1:8091`),
-`T2SQL_LOCAL_CLASSIFIER_URL` (optional override for the default model's URL),
+`T2SQL_TEV1_URL` (default `http://127.0.0.1:8090`),
+`T2SQL_LOCAL_CLASSIFIER_URL` (optional; takes precedence over `T2SQL_TEV1_URL`),
 `T2SQL_LOCAL_CLASSIFIER_TIMEOUT_S` (2, per request), `T2SQL_LOCAL_THRESHOLD` (0.5, `local`
 mode), `T2SQL_CASCADE_LOW` (0.10), `T2SQL_CASCADE_HIGH` (0.93). The band was chosen on the dev
 split of the scope benchmark; raising LOW or lowering HIGH sends more questions to the local
@@ -294,7 +278,7 @@ differences between rows as indicative (one question is 0.7 points).
 
 Who decided is visible everywhere: the trace entry of `classify` has
 `details = {classifier, decided_by: "local" | "llm", p_in, local_ms, local_model}`; `t2sql ask -v` prints
-"decided locally (local d1 p=0.97, 180 ms)"; the web UI shows "in scope · es · local d1
+"decided locally (local tev1 p=0.97, 180 ms)"; the web UI shows "in scope · es · local tev1
 p=0.97" or "· cloud LLM"; `/health` adds `classifier` and `local_classifier` (reachable or
 not, short timeout; it never makes the status `degraded`). Locally decided classifications
 have no LLM metadata, so they add no tokens or cost to the summary.
@@ -475,7 +459,7 @@ src/t2sql/
   sql_guard.py      sqlglot validation (pure, no database)
   db.py             read-only execution, schema introspection
   schema_index.py   embeddings in pgvector, ranking, keyword score, FK bridge expansion
-  local_classifier.py  optional local scope scorers (llama-server: Tev1, d1), language heuristic
+  local_classifier.py  optional local scope scorers (llama-server: Tev1), language heuristic
   catalog.py        table descriptions, column hints, keyword vocabulary
   llm.py            provider-agnostic interface, Gemini/Groq/Anthropic, fallback
   tracing.py        cost and trace summaries

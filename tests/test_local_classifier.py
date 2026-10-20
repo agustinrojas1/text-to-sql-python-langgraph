@@ -10,7 +10,6 @@ import pytest
 from t2sql import prompts
 from t2sql.config import CHINOOK_TABLES, Settings
 from t2sql.local_classifier import (
-    D1Scorer,
     LocalClassifierUnavailable,
     Tev1Scorer,
     build_scorer,
@@ -42,12 +41,6 @@ def tev1_body(a, b, extra=()):
     """Shape of llama-server /completion with n_predict=1, n_probs=10 (log-probabilities)."""
     top = [{"token": t, "logprob": math.log(p)} for t, p in (("A", a), ("B", b), *extra) if p > 0]
     return {"content": "A", "tokens_evaluated": 455, "completion_probabilities": [{"token": "A", "top_logprobs": top}]}
-
-
-def d1_body(p_in, kind="choice"):
-    """Shape of llama-server /v1/systemone for one `choice` question named scope."""
-    ans = {"type": kind, "choice": "in_scope", "probabilities": {"in_scope": p_in, "out_of_scope": 1 - p_in}}
-    return {"answers": {"scope": ans}, "usage": {"input_tokens": 380}}
 
 
 # ---------------------------------------------------------------- Tev1
@@ -123,54 +116,26 @@ def test_tev1_malformed_response_is_unavailable(body):
         Tev1Scorer(settings(), FakeHttp(body)).score("q")
 
 
-# ---------------------------------------------------------------- d1
-
-
-def test_d1_request_is_the_benchmarked_question():
-    http = FakeHttp(d1_body(0.88))
-    s = D1Scorer(settings(), http).score("¿Cuántos empleados hay?")
-    url, payload, _ = http.calls[0]
-    assert url == "http://llama:8090/v1/systemone"
-    assert payload == prompts.d1_request("¿Cuántos empleados hay?", TABLES)
-    q = payload["questions"]["scope"]
-    assert payload["state"] == "¿Cuántos empleados hay?" and q["type"] == "choice"
-    assert list(q["criteria"]) == ["in_scope", "out_of_scope"]
-    assert q["instructions"].endswith("\n\nCan the user's question be answered by querying this database?")
-    assert "- invoice_line: line items" in q["instructions"] and "in_scope is true only" not in q["instructions"]
-    assert s.p_in == 0.88 and s.model == "d1"
-
-
-@pytest.mark.parametrize(
-    "body",
-    [{}, {"answers": {}}, d1_body(0.5, kind="noul"), d1_body(1.5), {"answers": {"scope": {"type": "choice"}}}, [], None],
-)
-def test_d1_malformed_response_is_unavailable(body):
-    with pytest.raises(LocalClassifierUnavailable, match="unexpected d1 response"):
-        D1Scorer(settings(), FakeHttp(body)).score("q")
-
-
 # ---------------------------------------------------------------- transport, availability, factory
 
 
 def test_transport_errors_propagate_as_unavailable():
     err = LocalClassifierUnavailable("connection refused")
-    for scorer in (Tev1Scorer, D1Scorer):
-        with pytest.raises(LocalClassifierUnavailable, match="connection refused"):
-            scorer(settings(), FakeHttp(err)).score("q")
+    with pytest.raises(LocalClassifierUnavailable, match="connection refused"):
+        Tev1Scorer(settings(), FakeHttp(err)).score("q")
 
 
 def test_available_asks_health_with_a_short_timeout_and_never_raises():
     http = FakeHttp({"status": "ok"})
     assert Tev1Scorer(settings(local_classifier_timeout_s=5), http).available() is True
     assert http.calls == [("http://llama:8090/health", None, 1.0)]
-    assert D1Scorer(settings(), FakeHttp({"status": "loading model"})).available() is False
-    assert D1Scorer(settings(), FakeHttp(LocalClassifierUnavailable("down"))).available() is False
+    assert Tev1Scorer(settings(), FakeHttp({"status": "loading model"})).available() is False
+    assert Tev1Scorer(settings(), FakeHttp(LocalClassifierUnavailable("down"))).available() is False
 
 
 def test_build_scorer_by_mode_and_model():
     assert build_scorer(Settings(_env_file=None)) is None  # default: classifier=llm
     assert isinstance(build_scorer(settings(local_classifier_model="tev1")), Tev1Scorer)
-    assert isinstance(build_scorer(settings(local_classifier_model="d1")), D1Scorer)
     assert isinstance(build_scorer(Settings(_env_file=None, classifier="local")), Tev1Scorer)
 
 
@@ -210,8 +175,8 @@ def test_http_json_against_a_loopback_server():
             with pytest.raises(LocalClassifierUnavailable):
                 http_json(base + path, {}, 2)
         # End to end through a scorer: the echo has no probabilities, so it is "unexpected".
-        with pytest.raises(LocalClassifierUnavailable, match="unexpected d1 response"):
-            D1Scorer(Settings(_env_file=None, classifier="local", local_classifier_url=base)).score("q")
+        with pytest.raises(LocalClassifierUnavailable, match="unexpected tev1 response"):
+            Tev1Scorer(Settings(_env_file=None, classifier="local", local_classifier_url=base)).score("q")
     finally:
         srv.shutdown()
         srv.server_close()

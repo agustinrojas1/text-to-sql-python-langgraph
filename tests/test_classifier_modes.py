@@ -25,7 +25,7 @@ RESULT = QueryResult(["n"], [{"n": 59}])
 class FakeScorer:
     """Scripted P(in scope) per call (or an exception)."""
 
-    model = "d1"
+    model = "tev1"
 
     def __init__(self, *outcomes, up=True):
         self.outcomes, self.questions, self.up = list(outcomes), [], up
@@ -75,11 +75,11 @@ def test_defaults_keep_the_cloud_llm_only():
 
 def test_settings_from_environment(monkeypatch):
     monkeypatch.setenv("T2SQL_CLASSIFIER", "cascade")
-    monkeypatch.setenv("T2SQL_LOCAL_CLASSIFIER_MODEL", "d1")
+    monkeypatch.setenv("T2SQL_LOCAL_CLASSIFIER_MODEL", "tev1")
     monkeypatch.setenv("T2SQL_CASCADE_LOW", "0.1")
     monkeypatch.setenv("T2SQL_CASCADE_HIGH", "0.9")
     s = Settings(_env_file=None)
-    assert (s.classifier, s.local_classifier_model, s.cascade_low, s.cascade_high) == ("cascade", "d1", 0.1, 0.9)
+    assert (s.classifier, s.local_classifier_model, s.cascade_low, s.cascade_high) == ("cascade", "tev1", 0.1, 0.9)
 
 
 @pytest.mark.parametrize("kw", [{"classifier": "magic"}, {"local_classifier_model": "x"}, {"cascade_low": 0.9, "cascade_high": 0.1}, {"cascade_high": 1.5}])
@@ -108,8 +108,8 @@ def test_local_mode_applies_the_threshold_without_calling_the_llm(p, in_scope):
     e = classify_entry(s)
     assert s["in_scope"] is in_scope
     assert e["llm"] is None and e["cost_usd"] is None
-    assert e["details"] == {"classifier": "local", "decided_by": "local", "p_in": round(p, 4), "local_ms": 180.0, "local_model": "d1"}
-    assert s["scope_reason"].startswith("local classifier d1")
+    assert e["details"] == {"classifier": "local", "decided_by": "local", "p_in": round(p, 4), "local_ms": 180.0, "local_model": "tev1"}
+    assert s["scope_reason"].startswith("local classifier tev1")
     assert s["summary"]["llm_calls"] == (2 if in_scope else 0)  # classify costs nothing
     assert s["trace"][-1]["node"] == ("respond" if in_scope else "respond_out_of_scope")
 
@@ -140,7 +140,7 @@ def test_cascade_routing_bands():
     # unsure: the cloud LLM decides (even against the local lean), and p_in is still recorded
     s, llm = run("Who is the best artist?", "cascade", FakeScorer(0.5), [llm_scope(False)])
     e = classify_entry(s)
-    assert not s["in_scope"] and e["details"] == {"classifier": "cascade", "decided_by": "llm", "p_in": 0.5, "local_ms": 180.0, "local_model": "d1"}
+    assert not s["in_scope"] and e["details"] == {"classifier": "cascade", "decided_by": "llm", "p_in": 0.5, "local_ms": 180.0, "local_model": "tev1"}
     assert e["llm"]["model"] == "fake-model" and s["scope_reason"] == "cloud says so"
     assert len(llm.calls) == 1 and llm.calls[0].schema is ScopeDecision
 
@@ -199,8 +199,8 @@ def stream_classify(mode, scorer, llm_responses):
 def test_stream_event_carries_the_local_decision():
     ev_ = stream_classify("cascade", FakeScorer(0.97), sql_steps())
     assert ev_["data"] == {
-        "in_scope": True, "language": "en", "reason": "local classifier d1: P(in scope)=0.97",
-        "classifier": "cascade", "decided_by": "local", "p_in": 0.97, "local_ms": 180.0, "local_model": "d1",
+        "in_scope": True, "language": "en", "reason": "local classifier tev1: P(in scope)=0.97",
+        "classifier": "cascade", "decided_by": "local", "p_in": 0.97, "local_ms": 180.0, "local_model": "tev1",
         "local_unavailable": False,
     }  # fmt: skip
     assert ev_["llm"] is None and ev_["cost_usd"] is None
@@ -212,17 +212,17 @@ def test_stream_event_carries_the_local_decision():
 
 def test_cli_detail_and_trace_table(capsys, monkeypatch):
     monkeypatch.setattr(cli, "console", Console(width=250))
-    local = {"decided_by": "local", "p_in": 0.97, "local_ms": 180.4, "local_model": "d1"}
-    assert cli._detail({"node": "classify", "details": local}) == "decided locally (local d1 p=0.97, 180 ms)"
+    local = {"decided_by": "local", "p_in": 0.97, "local_ms": 180.4, "local_model": "tev1"}
+    assert cli._detail({"node": "classify", "details": local}) == "decided locally (local tev1 p=0.97, 180 ms)"
     unsure = {**local, "decided_by": "llm", "p_in": 0.5}
-    assert cli._detail({"node": "classify", "details": unsure}) == "decided by the cloud LLM (local d1 p=0.50, 180 ms)"
+    assert cli._detail({"node": "classify", "details": unsure}) == "decided by the cloud LLM (local tev1 p=0.50, 180 ms)"
     down = {"decided_by": "llm", "local_unavailable": True}
     assert "local classifier unavailable" in cli._detail({"node": "classify", "details": down})
     assert cli._detail({"node": "classify", "details": {"decided_by": "llm"}}) == "decided by the cloud LLM"
     s, _ = run("How many customers?", "cascade", FakeScorer(0.97), sql_steps())
     cli._print_trace(s["trace"], s["summary"])
     out = capsys.readouterr().out
-    assert "local/d1" in out and "decided locally (local d1 p=0.97, 180 ms)" in out and "2 LLM call(s)" in out
+    assert "local/tev1" in out and "decided locally (local tev1 p=0.97, 180 ms)" in out and "2 LLM call(s)" in out
 
 
 def client(mode, scorer, llm_responses=(), **kw):

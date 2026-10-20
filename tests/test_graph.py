@@ -117,3 +117,9 @@ def test_respond_prompt_asks_for_short_summary_not_enumeration():
     sys_prompt = prompts.RESPOND_SYSTEM
     assert "1 or 2" in sys_prompt and "Never enumerate more than 3" in sys_prompt
     assert "emails" in sys_prompt and "next to your answer" in sys_prompt
+
+
+def test_respond_prompt_requires_plain_text():
+    from t2sql import prompts
+
+    assert "plain text only" in prompts.RESPOND_SYSTEM and "no Markdown" in prompts.RESPOND_SYSTEM

@@ -1,11 +1,9 @@
 """Optional local "System 1" scope classifier: a small model served by llama.cpp's `llama-server`.
 
 A scorer answers one question, "P(this question is about the database)", in a few hundred
-milliseconds on a local GPU, with no tokens spent. Two models are supported:
-
-- `tev1`: Tev1-4B GGUF, queried through `/completion`; P(in scope) is read from the
-  probabilities of the option letters A / B.
-- `d1`: LiquidAI d1-3B GGUF, queried through `/v1/systemone` with a `choice` question.
+milliseconds on a local GPU, with no tokens spent. The model is Tev1-4B (GGUF), queried through
+`/completion`; P(in scope) is read from the probabilities of the option letters A / B. (A second
+model, LiquidAI d1-3B, was evaluated and its support removed; see docs/system1-classifier-study.md.)
 
 The scorers never decide anything: the classify node applies the thresholds. Any failure
 (server down, timeout, malformed answer) raises `LocalClassifierUnavailable`, which the node
@@ -42,7 +40,7 @@ class LocalClassifierUnavailable(Exception):
 class ScopeScore:
     p_in: float  # probability that the database can answer the question, 0..1
     latency_ms: float
-    model: str  # "tev1" | "d1"
+    model: str  # "tev1"
 
 
 class ScopeScorer(Protocol):
@@ -145,25 +143,7 @@ class Tev1Scorer(_LlamaServerScorer):
         return ScopeScore(p_in=sum(ps) / 2, latency_ms=round(latency, 1), model=self.model)
 
 
-class D1Scorer(_LlamaServerScorer):
-    """`choice` question; the server returns a probability per criterion."""
-
-    model = "d1"
-
-    def _request(self, question: str) -> tuple[str, dict[str, Any]]:
-        return "/v1/systemone", prompts.d1_request(question, self._tables)
-
-    def _parse(self, body: Any) -> float:
-        answer = body["answers"]["scope"]
-        if answer["type"] != "choice":
-            raise ValueError(f"answer type {answer['type']!r}, expected 'choice'")
-        p = float(answer["probabilities"]["in_scope"])
-        if not 0 <= p <= 1:
-            raise ValueError(f"probability {p} out of range")
-        return p
-
-
-SCORERS: dict[str, type[_LlamaServerScorer]] = {"tev1": Tev1Scorer, "d1": D1Scorer}
+SCORERS: dict[str, type[_LlamaServerScorer]] = {"tev1": Tev1Scorer}
 
 
 def build_scorer(settings: Settings, http: Http = http_json) -> ScopeScorer | None:
@@ -175,7 +155,7 @@ def build_scorer(settings: Settings, http: Http = http_json) -> ScopeScorer | No
 
 
 class ScorerPool:
-    """One scorer per local model, built on first use and then reused (a request can pick its model).
+    """One scorer per local model, built on first use and then reused.
 
     `preset` supplies ready-made scorers (tests, or the one the caller already built). Each model
     talks to its own llama-server URL (`Settings.local_url`).

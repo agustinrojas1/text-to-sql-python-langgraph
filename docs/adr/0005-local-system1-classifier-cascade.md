@@ -148,6 +148,8 @@ Design points:
 - The cascade run replayed the escalated decisions from the cloud run's cache, so its latency
   column covers only the local part.
 
+> Update 2026-10-20: after the evaluation, d1 support was removed from the code; Tev1 is the only local model. The history above is kept as written.
+
 ## See also
 
 - [docs/system1-classifier-study.md](../system1-classifier-study.md): the chronological study behind this decision (four rounds, the bar, what failed).
