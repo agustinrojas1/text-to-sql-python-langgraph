@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     # LLM otherwise. If the local server is down, both fall back to the cloud LLM.
     classifier: Literal["llm", "local", "cascade"] = "llm"
     local_classifier_model: Literal["tev1", "d1"] = "tev1"
+    # One llama-server serves one model, so each model has its own URL. T2SQL_LOCAL_CLASSIFIER_URL,
+    # when set, overrides the URL of the configured default model (local_classifier_model) only.
+    tev1_url: str = "http://127.0.0.1:8090"
+    d1_url: str = "http://127.0.0.1:8091"
     local_classifier_url: str = "http://127.0.0.1:8090"
     local_classifier_timeout_s: float = 2.0
     # P(in scope) at or above this is "in scope" when the local model decides alone ("local").
@@ -117,6 +121,14 @@ class Settings(BaseSettings):
         if not 0 <= self.cascade_low <= self.cascade_high <= 1:
             raise ValueError("need 0 <= T2SQL_CASCADE_LOW <= T2SQL_CASCADE_HIGH <= 1")
         return self
+
+    def local_url(self, model: str) -> str:
+        """llama-server URL of a local model: T2SQL_LOCAL_CLASSIFIER_URL if it was set explicitly
+        and `model` is the configured default model, else that model's own T2SQL_TEV1_URL /
+        T2SQL_D1_URL."""
+        if model == self.local_classifier_model and "local_classifier_url" in self.model_fields_set:
+            return self.local_classifier_url
+        return {"tev1": self.tev1_url, "d1": self.d1_url}[model]
 
     @field_validator("llm_providers", mode="before")
     @classmethod

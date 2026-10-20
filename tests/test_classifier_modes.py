@@ -95,7 +95,7 @@ def test_llm_mode_ignores_a_scorer_and_matches_the_old_behaviour():
     scorer = FakeScorer()  # would raise IndexError if asked
     s, llm = run("How many customers?", "llm", scorer, [llm_scope(), *sql_steps()])
     assert scorer.questions == [] and len(llm.calls) == 3
-    assert classify_entry(s)["details"] == {"decided_by": "llm"} and classify_entry(s)["llm"] is not None
+    assert classify_entry(s)["details"] == {"classifier": "llm", "decided_by": "llm"} and classify_entry(s)["llm"] is not None
     assert s["scope_reason"] == "cloud says so"
 
 
@@ -108,7 +108,7 @@ def test_local_mode_applies_the_threshold_without_calling_the_llm(p, in_scope):
     e = classify_entry(s)
     assert s["in_scope"] is in_scope
     assert e["llm"] is None and e["cost_usd"] is None
-    assert e["details"] == {"decided_by": "local", "p_in": round(p, 4), "local_ms": 180.0, "local_model": "d1"}
+    assert e["details"] == {"classifier": "local", "decided_by": "local", "p_in": round(p, 4), "local_ms": 180.0, "local_model": "d1"}
     assert s["scope_reason"].startswith("local classifier d1")
     assert s["summary"]["llm_calls"] == (2 if in_scope else 0)  # classify costs nothing
     assert s["trace"][-1]["node"] == ("respond" if in_scope else "respond_out_of_scope")
@@ -140,7 +140,7 @@ def test_cascade_routing_bands():
     # unsure: the cloud LLM decides (even against the local lean), and p_in is still recorded
     s, llm = run("Who is the best artist?", "cascade", FakeScorer(0.5), [llm_scope(False)])
     e = classify_entry(s)
-    assert not s["in_scope"] and e["details"] == {"decided_by": "llm", "p_in": 0.5, "local_ms": 180.0, "local_model": "d1"}
+    assert not s["in_scope"] and e["details"] == {"classifier": "cascade", "decided_by": "llm", "p_in": 0.5, "local_ms": 180.0, "local_model": "d1"}
     assert e["llm"]["model"] == "fake-model" and s["scope_reason"] == "cloud says so"
     assert len(llm.calls) == 1 and llm.calls[0].schema is ScopeDecision
 
@@ -158,7 +158,7 @@ def test_unavailable_scorer_falls_back_to_the_llm(mode):
     scorer = FakeScorer(LocalClassifierUnavailable("refused"))
     s, llm = run("How many customers?", mode, scorer, [llm_scope(), *sql_steps()])
     assert s["in_scope"] and s["answer"] == "59 customers."
-    assert classify_entry(s)["details"] == {"decided_by": "llm", "local_unavailable": True}
+    assert classify_entry(s)["details"] == {"classifier": mode, "decided_by": "llm", "local_unavailable": True, "local_model": "tev1"}
     assert len(llm.calls) == 3
 
 
@@ -200,7 +200,8 @@ def test_stream_event_carries_the_local_decision():
     ev_ = stream_classify("cascade", FakeScorer(0.97), sql_steps())
     assert ev_["data"] == {
         "in_scope": True, "language": "en", "reason": "local classifier d1: P(in scope)=0.97",
-        "decided_by": "local", "p_in": 0.97, "local_ms": 180.0, "local_model": "d1", "local_unavailable": False,
+        "classifier": "cascade", "decided_by": "local", "p_in": 0.97, "local_ms": 180.0, "local_model": "d1",
+        "local_unavailable": False,
     }  # fmt: skip
     assert ev_["llm"] is None and ev_["cost_usd"] is None
     ev_ = stream_classify("cascade", FakeScorer(0.5), [llm_scope(), *sql_steps()])

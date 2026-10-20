@@ -3,17 +3,24 @@
 import operator
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 from t2sql.config import Settings
 from t2sql.db import QueryResult
 from t2sql.llm import LLM
-from t2sql.local_classifier import ScopeScorer
+from t2sql.local_classifier import ScorerPool, ScopeScorer
 from t2sql.retrieval import SchemaRetriever
+
+
+ClassifierMode = Literal["llm", "local", "cascade"]
+LocalModel = Literal["tev1", "d1"]
 
 
 class AgentState(TypedDict, total=False):
     question: str
+    # Per-run overrides of T2SQL_CLASSIFIER / T2SQL_LOCAL_CLASSIFIER_MODEL; absent = server settings.
+    classifier: ClassifierMode
+    local_model: LocalModel
     language: str  # "en" | "es", detected by classify
     in_scope: bool
     scope_reason: str
@@ -46,3 +53,5 @@ class Deps:
     settings: Settings
     executor: Executor
     scorer: ScopeScorer | None = None  # local scope classifier; None = the cloud LLM decides
+    # Scorers by model, for per-run overrides; None = `scorer` is used whatever the model asked for.
+    scorers: ScorerPool | None = None

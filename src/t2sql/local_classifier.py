@@ -18,10 +18,12 @@ runtime dependency, and tests inject a fake `http` callable.
 import json
 import math
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -67,8 +69,8 @@ def http_json(url: str, payload: dict[str, Any] | None, timeout: float) -> Any:
 class _LlamaServerScorer:
     model: str
 
-    def __init__(self, settings: Settings, http: Http = http_json) -> None:
-        self._base = settings.local_classifier_url.rstrip("/")
+    def __init__(self, settings: Settings, http: Http = http_json, url: str | None = None) -> None:
+        self._base = (url or settings.local_classifier_url).rstrip("/")
         self._timeout = settings.local_classifier_timeout_s
         self._tables = sorted(settings.allowed_tables)
         self._http = http
@@ -168,7 +170,35 @@ def build_scorer(settings: Settings, http: Http = http_json) -> ScopeScorer | No
     """The configured scorer, or None when the classifier is the cloud LLM only."""
     if settings.classifier == "llm":
         return None
-    return SCORERS[settings.local_classifier_model](settings, http)
+    model = settings.local_classifier_model
+    return SCORERS[model](settings, http, settings.local_url(model))
+
+
+class ScorerPool:
+    """One scorer per local model, built on first use and then reused (a request can pick its model).
+
+    `preset` supplies ready-made scorers (tests, or the one the caller already built). Each model
+    talks to its own llama-server URL (`Settings.local_url`).
+    """
+
+    def __init__(
+        self, settings: Settings, http: Http = http_json, preset: dict[str, ScopeScorer] | None = None
+    ) -> None:
+        self._settings, self._http = settings, http
+        self._scorers: dict[str, ScopeScorer] = dict(preset or {})
+        self._lock = threading.Lock()
+
+    def get(self, model: str) -> ScopeScorer:
+        with self._lock:
+            if model not in self._scorers:
+                self._scorers[model] = SCORERS[model](self._settings, self._http, self._settings.local_url(model))
+            return self._scorers[model]
+
+    def availability(self) -> dict[str, bool]:
+        """Is each model's server up? Probed in parallel, so /health waits for one short timeout, not the sum."""
+        models = list(SCORERS)
+        with ThreadPoolExecutor(len(models)) as pool:
+            return dict(zip(models, pool.map(lambda m: self.get(m).available(), models), strict=True))
 
 
 # ---------------------------------------------------------------- language

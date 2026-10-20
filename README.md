@@ -153,6 +153,16 @@ with the latency of each step and an expandable detail (SQL, retrieval scores, t
 guard checks, tokens, cost). When it finishes it shows the answer, the result table, the SQL and the run totals.
 Each question is independent: there is no conversation memory.
 
+Next to the composer there is a selector for how the scope check runs, per question:
+`LLM` (cloud only), `Cascade` (local model first, cloud for the uncertain band) and `Local`
+(local model only). With Cascade or Local a second select picks the local model (Tev1 or d1).
+The choice is remembered in the browser; options whose local server is not reachable say
+"offline" (they still work: the request falls back to the cloud LLM and the classify step says
+"local tev1 unavailable → cloud LLM"). Each turn shows which mode and model it used. The same
+choice is available over HTTP and on the command line: `/ask` and `/ask/stream` accept
+`"classifier": "llm" | "local" | "cascade"` and `"local_model": "tev1" | "d1"` in the body
+(default: the server settings), and `t2sql ask --classifier cascade --local-model d1`.
+
 ## Demo without network
 
 The demo normally needs the cloud LLM and the internet. To run it offline, record the questions once while online, then replay them:
@@ -166,6 +176,14 @@ T2SQL_REPLAY_DIR=recordings uv run uvicorn t2sql.api:app
 ```
 
 `T2SQL_RECORD_DIR` does the same recording for any run of the server (`/ask/stream` only), overwriting the file of that question. A run is saved only if it ends with a `final` event, so a failed run never replaces a good recording. Questions match after lowercasing, trimming and collapsing whitespace; a question without a recording runs the real agent. Replay sends the recorded lines unchanged, with the original pause between events capped at `T2SQL_REPLAY_MAX_GAP_S` (1.5 s by default). With replay on, `/health` reports `"replay": true` and the web UI shows a small "replay" badge in its header. Without either setting nothing changes.
+
+Recordings are keyed by question **and** classifier mode / local model (`<slug>-<hash>-cascade-tev1.ndjson`,
+the header repeats both), so a cascade recording is never replayed for an LLM-mode request; record each
+mode you want to show (`uv run t2sql record --classifier cascade --local-model tev1`, and so on). A request
+that does not choose a mode gets the server's default one (`T2SQL_CLASSIFIER`, `T2SQL_LOCAL_CLASSIFIER_MODEL`).
+Recordings made before the selector existed (no mode in the file name or header) still replay, for
+requests that resolve to the server's default mode only. In replay mode, picking a mode with no recording
+for that question runs the agent live (which needs the network).
 
 Recordings hold the full prompts and results of the run, so keep them out of the repository unless you want them there.
 
@@ -224,13 +242,32 @@ curl -L -o ~/.cache/t2sql/models/Tev1-4B-GGUF/togethercomputer_Tev1-4B-experimen
 T2SQL_CLASSIFIER=cascade uv run t2sql ask -v "How many customers?"
 ```
 
+**Both models in the web UI.** One llama-server serves one model, so each model has its own
+port: Tev1 on 8090 (`T2SQL_TEV1_URL`) and d1 on 8091 (`T2SQL_D1_URL`). Start whichever you want
+to offer (the UI marks the other "offline"):
+
+```bash
+LS=~/.cache/t2sql/llama.cpp/build/bin/llama-server
+$LS -m ~/.cache/t2sql/models/Tev1-4B-GGUF/togethercomputer_Tev1-4B-experimental-Q4_K_M.gguf \
+    -ngl 99 -c 2048 -np 1 --host 127.0.0.1 --port 8090 &      # ~3 GB VRAM
+$LS -m ~/.cache/t2sql/models/d1-3B-GGUF/d1-3B-Q4_K_M.gguf \
+    -ngl 99 -c 2048 -np 1 --host 127.0.0.1 --port 8091 &      # ~2 GB VRAM
+uv run uvicorn t2sql.api:app                                  # pick the mode and model in the page
+```
+
+`T2SQL_LOCAL_CLASSIFIER_URL` still works: when set, it overrides the URL of the default model
+(`T2SQL_LOCAL_CLASSIFIER_MODEL`) only; the other model keeps its own `T2SQL_TEV1_URL` /
+`T2SQL_D1_URL`. `/health` adds `local_models` (`{"tev1": true, "d1": false}`) and `local_model`
+(the default).
+
 **License caveat**: the Tev1-4B-experimental model card says the license of the fine-tuned
 weights "is being finalized" (the base model, Qwen3.5-4B, is Apache-2.0). Treat it as
 experimental until that is settled; the repository does not bundle it. d1-3B is under the
 LFM Open License v1.0.
 
 Settings (see `.env.example`): `T2SQL_LOCAL_CLASSIFIER_MODEL` (`tev1`),
-`T2SQL_LOCAL_CLASSIFIER_URL` (default `http://127.0.0.1:8090`),
+`T2SQL_TEV1_URL` (default `http://127.0.0.1:8090`), `T2SQL_D1_URL` (default `http://127.0.0.1:8091`),
+`T2SQL_LOCAL_CLASSIFIER_URL` (optional override for the default model's URL),
 `T2SQL_LOCAL_CLASSIFIER_TIMEOUT_S` (2, per request), `T2SQL_LOCAL_THRESHOLD` (0.5, `local`
 mode), `T2SQL_CASCADE_LOW` (0.10), `T2SQL_CASCADE_HIGH` (0.93). The band was chosen on the dev
 split of the scope benchmark; raising LOW or lowering HIGH sends more questions to the local
@@ -256,7 +293,7 @@ test come from the same pool of questions, and only one cloud model was measured
 differences between rows as indicative (one question is 0.7 points).
 
 Who decided is visible everywhere: the trace entry of `classify` has
-`details = {decided_by: "local" | "llm", p_in, local_ms, local_model}`; `t2sql ask -v` prints
+`details = {classifier, decided_by: "local" | "llm", p_in, local_ms, local_model}`; `t2sql ask -v` prints
 "decided locally (local d1 p=0.97, 180 ms)"; the web UI shows "in scope · es · local d1
 p=0.97" or "· cloud LLM"; `/health` adds `classifier` and `local_classifier` (reachable or
 not, short timeout; it never makes the status `degraded`). Locally decided classifications

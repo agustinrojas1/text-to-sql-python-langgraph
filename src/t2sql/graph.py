@@ -16,7 +16,7 @@ from langgraph.graph.state import CompiledStateGraph
 from t2sql.config import Settings, get_settings
 from t2sql.db import execute_readonly
 from t2sql.llm import LLM
-from t2sql.local_classifier import ScopeScorer, build_scorer
+from t2sql.local_classifier import ScorerPool, ScopeScorer, build_scorer
 from t2sql.nodes.classify import make_classify, make_respond_out_of_scope, route_after_classify
 from t2sql.nodes.execute import make_execute
 from t2sql.nodes.generate import make_generate_sql
@@ -53,14 +53,22 @@ def build_graph(
     settings: Settings | None = None,
     executor: Executor | None = None,
     scorer: ScopeScorer | None = None,
+    scorers: dict[str, ScopeScorer] | None = None,
 ) -> CompiledStateGraph:
+    """`scorer` is the default model's scorer; `scorers` adds ready-made ones by model name (tests).
+    Any other model a request asks for is built on first use from its own URL (ScorerPool)."""
     settings = settings or get_settings()
+    default = scorer or build_scorer(settings)
+    preset = dict(scorers or {})
+    if default:
+        preset.setdefault(settings.local_classifier_model, default)
     deps = Deps(
         llm=llm,
         retriever=retriever or default_retriever(settings),
         settings=settings,
         executor=executor or (lambda sql: execute_readonly(sql, settings)),
-        scorer=scorer or build_scorer(settings),
+        scorer=default,
+        scorers=ScorerPool(settings, preset=preset),
     )
 
     g = StateGraph(AgentState)
@@ -91,8 +99,16 @@ def build_graph(
     return g.compile().with_config({"recursion_limit": recursion_limit(settings.max_repairs)})
 
 
-def _initial_state(question: str) -> dict[str, Any]:
-    return {"question": question, "attempts": 0, "attempt_history": [], "trace": []}
+def _initial_state(
+    question: str, classifier: str | None = None, local_model: str | None = None
+) -> dict[str, Any]:
+    """`classifier` / `local_model` override the server settings for this run only."""
+    state: dict[str, Any] = {"question": question, "attempts": 0, "attempt_history": [], "trace": []}
+    if classifier:
+        state["classifier"] = classifier
+    if local_model:
+        state["local_model"] = local_model
+    return state
 
 
 def _finish(state: AgentState, question: str, settings: Settings | None) -> AgentState:
@@ -104,10 +120,14 @@ def _finish(state: AgentState, question: str, settings: Settings | None) -> Agen
 
 
 def run_question(
-    graph: CompiledStateGraph, question: str, settings: Settings | None = None
+    graph: CompiledStateGraph,
+    question: str,
+    settings: Settings | None = None,
+    classifier: str | None = None,
+    local_model: str | None = None,
 ) -> AgentState:
     """Run the graph (its recursion limit is set in build_graph), attach the trace summary and (if configured) append the trace file."""
-    return _finish(graph.invoke(_initial_state(question)), question, settings)
+    return _finish(graph.invoke(_initial_state(question, classifier, local_model)), question, settings)
 
 
 def _retrieve_data(update: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
@@ -182,6 +202,7 @@ def node_event(node: str, update: dict[str, Any]) -> dict[str, Any]:
             "in_scope": update["in_scope"],
             "language": update["language"],
             "reason": update["scope_reason"],
+            "classifier": details.get("classifier"),  # the mode this run used: "llm" | "local" | "cascade"
             "decided_by": details.get("decided_by", "llm"),  # "local" | "llm"
             "p_in": details.get("p_in"),  # local model's P(in scope), if it was asked
             "local_ms": details.get("local_ms"),
@@ -230,7 +251,11 @@ def node_event(node: str, update: dict[str, Any]) -> dict[str, Any]:
 
 
 def stream_question(
-    graph: CompiledStateGraph, question: str, settings: Settings | None = None
+    graph: CompiledStateGraph,
+    question: str,
+    settings: Settings | None = None,
+    classifier: str | None = None,
+    local_model: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Like run_question, but yields live events as the graph runs, then a `final` event
     carrying the complete state (with summary). Exceptions from the graph propagate to the
@@ -247,7 +272,7 @@ def stream_question(
     state: AgentState = {}
     tokens = TokenStream()
     modes = ["updates", "values", "custom", "messages"]
-    for mode, chunk in graph.stream(_initial_state(question), stream_mode=modes):
+    for mode, chunk in graph.stream(_initial_state(question, classifier, local_model), stream_mode=modes):
         if mode == "values":
             state = chunk
         elif mode == "updates":

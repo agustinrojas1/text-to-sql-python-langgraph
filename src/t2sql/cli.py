@@ -1,6 +1,7 @@
 """Command line entry point: `t2sql ask "question"`, `t2sql index` and `t2sql record`."""
 
 import json
+from collections.abc import Callable
 from typing import Annotated, Any
 
 import typer
@@ -14,7 +15,7 @@ from t2sql.config import get_settings
 from t2sql.db import DatabaseUnavailableError
 from t2sql.graph import build_graph, run_question
 from t2sql.llm import LLMUnavailableError, build_llm
-from t2sql.replay import DEFAULT_QUESTIONS, recording_path
+from t2sql.replay import DEFAULT_QUESTIONS, recording_path, variant
 from t2sql.schema_index import DEFAULT_TABLE, META_SCHEMA, FastEmbedEmbedder, build_index
 
 MAX_TABLE_ROWS = 20
@@ -23,6 +24,28 @@ MAX_CELL_CHARS = 40
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 console = Console()
 err = Console(stderr=True)
+
+
+CLASSIFIER_HELP = "Scope classifier for this question: llm, local or cascade (default: T2SQL_CLASSIFIER)"
+LOCAL_MODEL_HELP = "Local model for local/cascade: tev1 or d1 (default: T2SQL_LOCAL_CLASSIFIER_MODEL)"
+
+
+def _one_of(name: str, allowed: tuple[str, ...]) -> Callable[[str], str]:
+    def check(value: str) -> str:
+        if value and value not in allowed:
+            raise typer.BadParameter(f"{value!r} is not one of {', '.join(allowed)}")
+        return value
+
+    return check
+
+
+_check_classifier = _one_of("classifier", ("llm", "local", "cascade"))
+_check_local_model = _one_of("local model", ("tev1", "d1"))
+
+
+def _overrides(classifier: str, local_model: str) -> dict[str, str]:
+    """Only the options the user gave; the rest stays the server settings."""
+    return {k: v for k, v in (("classifier", classifier), ("local_model", local_model)) if v}
 
 
 def _cell(v: Any) -> str:
@@ -98,6 +121,8 @@ def _print_trace(trace: list[dict[str, Any]], summary: dict[str, Any]) -> None:
 def ask(
     question: Annotated[str, typer.Argument(help="Question in English or Spanish")],
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Show per-node trace, cost and retrieval")] = False,
+    classifier: Annotated[str, typer.Option(help=CLASSIFIER_HELP, callback=_check_classifier)] = "",
+    local_model: Annotated[str, typer.Option(help=LOCAL_MODEL_HELP, callback=_check_local_model)] = "",
 ) -> None:
     """Answer a question with SQL over the database."""
     settings = get_settings()
@@ -108,7 +133,7 @@ def ask(
         raise typer.Exit(2) from e
 
     try:
-        state = run_question(build_graph(llm, settings=settings), question, settings)
+        state = run_question(build_graph(llm, settings=settings), question, settings, **_overrides(classifier, local_model))
     except DatabaseUnavailableError as e:  # not repairable: the SQL is not the problem
         err.print(f"[red]Database unavailable: {escape(str(e))}[/]")
         raise typer.Exit(1) from e
@@ -159,15 +184,20 @@ def record(
     directory: Annotated[
         str, typer.Option("--dir", "-d", help="Where to save (default: T2SQL_RECORD_DIR, else ./recordings)")
     ] = "",
+    classifier: Annotated[str, typer.Option(help=CLASSIFIER_HELP, callback=_check_classifier)] = "",
+    local_model: Annotated[str, typer.Option(help=LOCAL_MODEL_HELP, callback=_check_local_model)] = "",
 ) -> None:
-    """Record /ask/stream runs for the offline demo (see T2SQL_REPLAY_DIR). Needs the LLM and database."""
+    """Record /ask/stream runs for the offline demo (see T2SQL_REPLAY_DIR). Needs the LLM and database.
+
+    A recording is keyed by question AND classifier mode / local model: run this once per mode
+    you want to be able to replay."""
     runtime = build_runtime()
     target = directory or runtime.settings.record_dir or "recordings"
     runtime.settings = runtime.settings.model_copy(update={"record_dir": target, "replay_dir": None})
     failed = 0
     for q in questions or DEFAULT_QUESTIONS:
         last = ""
-        for last in stream_lines(runtime, q):
+        for last in stream_lines(runtime, q, **_overrides(classifier, local_model)):
             pass
         ev = json.loads(last) if last else {}
         if ev.get("type") != "final":
@@ -175,7 +205,7 @@ def record(
             err.print(f"[red]not recorded[/] {escape(q)}: {escape(str(ev.get('detail', 'no events')))}")
             continue
         note = "out of scope" if not ev["in_scope"] else f"error: {ev['error']}" if ev["error"] else f"{ev['row_count']} row(s)"
-        console.print(f"recorded {escape(q)} -> {recording_path(target, q)} ({escape(note)})", soft_wrap=True)
+        console.print(f"recorded {escape(q)} -> {recording_path(target, q, variant(classifier or runtime.settings.classifier, local_model or runtime.settings.local_classifier_model))} ({escape(note)})", soft_wrap=True)
     if failed:
         raise typer.Exit(1)
 

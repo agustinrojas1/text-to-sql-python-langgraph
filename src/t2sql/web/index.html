@@ -32,7 +32,7 @@ header .meta { color: var(--muted); margin-left: 12px; }
 header .badge { font-size: 12px; margin-left: 8px; padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); }
 #demo { font: inherit; font-size: 13px; color: var(--fg); background: none; border: 1px solid var(--line); border-radius: 999px; padding: 3px 12px; cursor: pointer; white-space: nowrap; }
 #demo[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
-main { padding: 24px 0 170px; }
+main { padding: 24px 0 200px; }
 .muted { color: var(--muted); }
 .small { font-size: var(--fs-sm); }
 .mono { font-family: var(--mono); }
@@ -190,6 +190,15 @@ textarea:disabled { opacity: .6; }
 .send { font: inherit; padding: 9px 16px; border-radius: 6px; border: 1px solid var(--fg); background: var(--fg); color: var(--bg); cursor: pointer; }
 .send:disabled { opacity: .4; cursor: default; }
 .hint { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+.modebar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 10px; font-size: var(--fs-xs); color: var(--muted); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+.seg button { font: inherit; font-size: var(--fs-xs); color: var(--fg); background: none; border: 0; padding: 3px 12px; cursor: pointer; white-space: nowrap; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-checked="true"] { background: var(--fg); color: var(--bg); }
+.seg button:focus-visible { outline-offset: -2px; }
+.modebar select { font: inherit; font-size: var(--fs-xs); color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; }
+.modebar .note { flex-basis: 100%; margin: 0; }
+.modeline { margin: -6px 0 10px; color: var(--muted); font-size: var(--fs-xs); }
 
 @media (max-width: 600px) {
   .pbody { padding-left: 14px; }
@@ -231,6 +240,16 @@ textarea:disabled { opacity: .6; }
 </div>
 <div class="composer">
   <div class="col">
+    <div class="modebar" id="modebar">
+      <span id="modelabel">Scope check</span>
+      <div class="seg" role="radiogroup" aria-labelledby="modelabel" id="modeseg" title="Who decides whether the question is about the music store">
+        <button type="button" role="radio" data-mode="llm" aria-checked="true" title="Cloud LLM only">LLM</button>
+        <button type="button" role="radio" data-mode="cascade" aria-checked="false" title="Local model first, cloud LLM when it is unsure">Cascade</button>
+        <button type="button" role="radio" data-mode="local" aria-checked="false" title="Local model only (cloud LLM only if it is unreachable)">Local</button>
+      </div>
+      <select id="modelsel" aria-label="Local model" hidden></select>
+      <span class="note" id="modenote" hidden></span>
+    </div>
     <form id="form">
       <textarea id="q" rows="1" maxlength="500" placeholder="Ask a question (each one is independent)" aria-label="Question"></textarea>
       <button class="send" id="send" type="submit">Ask</button>
@@ -251,6 +270,11 @@ const numOrNull = (v) => (typeof v === "number" && isFinite(v) ? v : null);
 const fmtInt = (n) => (typeof n === "number" && isFinite(n) ? n.toLocaleString("en-US") : String(n ?? ""));
 const ms = (v) => (v == null ? "" : v >= 1000 ? (v / 1000).toFixed(1) + " s" : Math.round(v) + " ms");
 const usd = (v) => (v == null ? "n/a" : "$" + (v < 0.01 ? v.toFixed(5) : v.toFixed(3)));
+const MODE_NAMES = { llm: "LLM", cascade: "Cascade", local: "Local" };
+const MODEL_NAMES = { tev1: "Tev1", d1: "d1" };
+/** "LLM", "Cascade · tev1", "Local · d1": the scope-check mode of a request or of a classify event. */
+const modeLabel = (mode, model) => (MODE_NAMES[mode] ? MODE_NAMES[mode] + (mode !== "llm" && model ? " · " + model : "") : "");
+const modeText = (mode, model) => (mode === "llm" ? "cloud LLM only" : modeLabel(mode, model).toLowerCase());
 const plural = (n, word) => `${fmtInt(n)} ${word}${n === 1 ? "" : "s"}`;
 
 const SQL_KW = new Set(("select from where join inner left right full outer cross on using group by order having limit offset as and or not in is " +
@@ -363,12 +387,50 @@ function el(tag, props = {}, ...kids) {
 }
 const tx = (tag, className, textContent) => el(tag, { className, textContent });
 
-fetch("/health").then((r) => r.json()).then((h) => {
-  providers = arr(h.llm_providers);
-  $("#meta").textContent = "Chinook, PostgreSQL" + (providers.length ? " · " + providers.join(", ") : " · no LLM configured")
-    + (h.classifier && h.classifier !== "llm" ? ` · classifier: ${h.classifier} (local ${h.local_classifier ? "up" : "down"})` : "");
-  $("#replay").hidden = !h.replay;
-}).catch(() => {});
+let health = null;           // last /health body
+const sel = { classifier: null, model: null };  // the user's choice; null = the server's default
+try { sel.classifier = localStorage.getItem("t2sql.classifier"); sel.model = localStorage.getItem("t2sql.localModel"); } catch {}
+if (!MODE_NAMES[sel.classifier]) sel.classifier = null;
+if (!MODEL_NAMES[sel.model]) sel.model = null;
+const curMode = () => sel.classifier ?? health?.classifier ?? "llm";
+const curModel = () => sel.model ?? health?.local_model ?? "tev1";
+/** Is this model's llama-server reachable? Unknown (no /health yet) counts as up. */
+const modelUp = (m) => obj(health?.local_models)[m] !== false;
+
+function renderMode() {
+  const mode = curMode(), model = curModel();
+  for (const b of document.querySelectorAll("#modeseg button")) b.setAttribute("aria-checked", String(b.dataset.mode === mode));
+  const ms_ = $("#modelsel");
+  ms_.hidden = mode === "llm";
+  ms_.replaceChildren(...Object.entries(MODEL_NAMES).map(([k, name]) =>
+    el("option", { value: k, selected: k === model, textContent: name + (modelUp(k) ? "" : " (offline)") })));
+  const note = $("#modenote");
+  let text = "";
+  if (mode !== "llm" && !modelUp(model)) text = `${model} is offline: the cloud LLM will classify instead.`;
+  if (health?.replay) text += (text ? " " : "") + "Replay: only questions recorded in this mode replay; others run live.";
+  note.textContent = text; note.hidden = !text;
+}
+function chooseMode(mode, model) {
+  if (mode) sel.classifier = mode;
+  if (model) sel.model = model;
+  try { localStorage.setItem("t2sql.classifier", curMode()); localStorage.setItem("t2sql.localModel", curModel()); } catch {}
+  renderMode();
+}
+document.querySelectorAll("#modeseg button").forEach((b) => b.addEventListener("click", () => chooseMode(b.dataset.mode)));
+$("#modelsel").addEventListener("change", (e) => chooseMode(null, e.target.value));
+
+function loadHealth() {
+  return fetch("/health").then((r) => r.json()).then((h) => {
+    health = obj(h);
+    providers = arr(h.llm_providers);
+    $("#meta").textContent = "Chinook, PostgreSQL" + (providers.length ? " · " + providers.join(", ") : " · no LLM configured");
+    $("#replay").hidden = !h.replay;
+    renderMode();
+  }).catch(() => {});
+}
+renderMode();
+loadHealth();
+addEventListener("focus", () => { if (!running) loadHealth(); });
 
 /** SQL text -> DocumentFragment with keyword emphasis. Only text nodes and spans, never innerHTML. */
 function highlightSql(text) {
@@ -455,7 +517,8 @@ function newTurn(question) {
   turn.statusEl = tx("span", "sstatus", "");
   turn.statusEl.setAttribute("aria-live", "polite");
   turn.statusEl.setAttribute("aria-atomic", "true");
-  turn.root.append(tx("p", "q", question), el("div", { className: "stripwrap" }, strip, turn.loop, turn.statusEl), turn.board);
+  turn.modeEl = tx("p", "modeline", "");
+  turn.root.append(tx("p", "q", question), turn.modeEl, el("div", { className: "stripwrap" }, strip, turn.loop, turn.statusEl), turn.board);
   return turn;
 }
 
@@ -588,7 +651,7 @@ RENDER.classify = (turn, p, ev, d) => {
   if (d.decided_by === "local") {
     by = `Decided by the local model ${d.local_model ?? ""}` + (numOrNull(d.p_in) != null ? `, P(in scope) = ${d.p_in.toFixed(2)}` : "")
       + (numOrNull(d.local_ms) != null ? `, ${ms(d.local_ms)}` : "");
-  } else if (d.local_unavailable) by = "Decided by the cloud LLM (the local classifier was unavailable)";
+  } else if (d.local_unavailable) by = `Decided by the cloud LLM (local ${d.local_model ?? ""} unavailable \u2192 cloud LLM)`.replace("  ", " ");
   else if (numOrNull(d.p_in) != null) by = `Decided by the cloud LLM (the local model ${d.local_model ?? ""} was unsure, P = ${d.p_in.toFixed(2)})`;
   else by = "Decided by the cloud LLM";
   const row = el("div", { className: "row" });
@@ -596,8 +659,9 @@ RENDER.classify = (turn, p, ev, d) => {
   if (lang) row.append(tx("span", "pill", lang));
   p.content.append(row, tx("p", "lead", by));
   if (d.reason) p.content.append(tx("p", "lead muted", String(d.reason)));
+  if (MODE_NAMES[d.classifier]) turn.modeEl.textContent = "Scope check: " + modeText(d.classifier, d.local_model);
   p.line.textContent = [inScope === true ? "in scope" : inScope === false ? "out of scope" : "", lang,
-    d.decided_by === "local" ? "local model" : "cloud LLM"].filter(Boolean).join(" · ");
+    d.decided_by === "local" ? `local ${d.local_model ?? "model"}` : d.local_unavailable ? `${d.local_model ?? "local"} offline \u2192 cloud LLM` : "cloud LLM"].filter(Boolean).join(" · ");
   if (inScope === false) for (const g of ["retrieve", "generate", "validate", "execute"]) turn.chips[g].li.hidden = true;
 };
 
@@ -1011,6 +1075,11 @@ async function ask(question) {
   thread.append(turn.root);
   turn.root.scrollIntoView({ block: "start" });
   turn.statusEl.textContent = "Waiting for the first event…";
+  const mode = curMode(), model = curModel();
+  const body = { question };
+  if (sel.classifier) body.classifier = sel.classifier;
+  if (sel.model && mode !== "llm") body.local_model = sel.model;
+  turn.modeEl.textContent = "Scope check: " + modeText(mode, model);
 
   const line = (s) => {
     s = s.trim();
@@ -1020,7 +1089,7 @@ async function ask(question) {
     handleEvent(turn, obj(ev));
   };
   try {
-    const res = await fetch("/ask/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question }) });
+    const res = await fetch("/ask/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     if (!res.ok) {
       let d = res.statusText;
       try { const j = await res.json(); d = typeof j.detail === "string" ? j.detail : "Invalid request"; } catch {}
@@ -1043,6 +1112,7 @@ async function ask(question) {
   } finally {
     stopTimer(turn);
     running = false; box.disabled = send.disabled = false; box.focus();
+    loadHealth();
   }
 }
 

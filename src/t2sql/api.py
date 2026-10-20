@@ -26,7 +26,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import psycopg
@@ -39,7 +39,7 @@ from t2sql.config import Settings, get_settings
 from t2sql.db import DatabaseUnavailableError
 from t2sql.graph import build_graph, run_question, stream_question
 from t2sql.llm import PROVIDERS, LLMUnavailableError, build_llm
-from t2sql.local_classifier import build_scorer
+from t2sql.local_classifier import ScorerPool, build_scorer
 from t2sql.replay import load_recording, record_lines, replay_lines
 from t2sql.schema_index import index_exists
 
@@ -53,6 +53,9 @@ INDEX_HTML = Path(__file__).parent / "web" / "index.html"
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=500)
+    # Per-request override of T2SQL_CLASSIFIER / T2SQL_LOCAL_CLASSIFIER_MODEL (None = server settings).
+    classifier: Literal["llm", "local", "cascade"] | None = None
+    local_model: Literal["tev1", "d1"] | None = None
 
 
 class Summary(BaseModel):
@@ -90,6 +93,11 @@ class Health(BaseModel):
     # Is the local scorer's server up? None when the classifier is "llm". Not part of `status`:
     # without it the cloud LLM classifies, so the service still works.
     local_classifier: bool | None
+    local_model: str  # the server's default local model (T2SQL_LOCAL_CLASSIFIER_MODEL)
+    # Reachability of each model's llama-server, e.g. {"tev1": true, "d1": false}; {} if not checked.
+    # Probed in parallel with a short timeout. A down model never degrades `status`: requests
+    # that pick it fall back to the cloud LLM.
+    local_models: dict[str, bool] = {}
     replay: bool = False  # T2SQL_REPLAY_DIR is set: recorded questions are replayed, no network needed
 
 
@@ -107,6 +115,7 @@ class Runtime:
     db_check: Callable[[], bool] = lambda: True
     index_check: Callable[[], bool] = lambda: True
     local_check: Callable[[], bool] | None = None  # None: no local classifier configured
+    local_models_check: Callable[[], dict[str, bool]] | None = None  # per-model reachability
 
 
 def _db_reachable(settings: Settings) -> bool:
@@ -126,6 +135,7 @@ def build_runtime() -> Runtime:
         p for p in settings.llm_providers if p in PROVIDERS and getattr(settings, PROVIDERS[p][0])
     ]
     scorer = build_scorer(settings)
+    pool = ScorerPool(settings, preset={settings.local_classifier_model: scorer} if scorer else None)
     runtime = Runtime(
         graph=None,
         settings=settings,
@@ -133,6 +143,7 @@ def build_runtime() -> Runtime:
         db_check=lambda: _db_reachable(settings),
         index_check=lambda: index_exists(settings.embedding_model, settings),
         local_check=scorer.available if scorer else None,
+        local_models_check=pool.availability,
     )
     try:
         llm = build_llm(settings)
@@ -199,12 +210,14 @@ def _error_line(status: int, detail: str) -> str:
     return json.dumps({"type": "error", "status": status, "detail": detail}) + "\n"
 
 
-def event_lines(runtime: "Runtime", question: str) -> Iterator[str]:
+def event_lines(
+    runtime: "Runtime", question: str, classifier: str | None = None, local_model: str | None = None
+) -> Iterator[str]:
     """The NDJSON lines of one live run of the graph. Failures become a final `error` line."""
     try:
         if runtime.graph is None:
             raise HTTPException(503, runtime.llm_error or "No LLM provider is available")
-        for ev in stream_question(runtime.graph, question, runtime.settings):
+        for ev in stream_question(runtime.graph, question, runtime.settings, classifier, local_model):
             if ev["type"] == "final":
                 ev = {"type": "final", **to_response(ev["state"], False).model_dump()}
             yield json.dumps(json_safe(ev), ensure_ascii=False) + "\n"
@@ -221,14 +234,21 @@ def event_lines(runtime: "Runtime", question: str) -> Iterator[str]:
         yield _error_line(500, "Internal server error")
 
 
-def stream_lines(runtime: "Runtime", question: str) -> Iterator[str]:
-    """What `/ask/stream` sends: a recording if replay is on and one matches, else a live run
-    (saved to T2SQL_RECORD_DIR if set). With neither setting this is exactly `event_lines`."""
+def stream_lines(
+    runtime: "Runtime", question: str, classifier: str | None = None, local_model: str | None = None
+) -> Iterator[str]:
+    """What `/ask/stream` sends: a recording if replay is on and one matches (same question AND
+    same classifier mode / local model), else a live run (saved to T2SQL_RECORD_DIR if set).
+    `classifier` / `local_model` None mean the server settings. With neither replay nor record
+    configured this is exactly `event_lines`."""
     s = runtime.settings
-    if s.replay_dir and (events := load_recording(s.replay_dir, question)):
+    mode, model = classifier or s.classifier, local_model or s.local_classifier_model
+    if s.replay_dir and (
+        events := load_recording(s.replay_dir, question, mode, model, (s.classifier, s.local_classifier_model))
+    ):
         return replay_lines(events, s.replay_max_gap_s)
-    lines = event_lines(runtime, question)
-    return record_lines(lines, s.record_dir, question) if s.record_dir else lines
+    lines = event_lines(runtime, question, classifier, local_model)
+    return record_lines(lines, s.record_dir, question, mode, model) if s.record_dir else lines
 
 
 def create_app(factory: Callable[[], Runtime] = build_runtime) -> FastAPI:
@@ -251,7 +271,7 @@ def create_app(factory: Callable[[], Runtime] = build_runtime) -> FastAPI:
         if runtime.graph is None:
             raise HTTPException(503, runtime.llm_error or "No LLM provider is available")
         try:
-            state = run_question(runtime.graph, body.question, runtime.settings)
+            state = run_question(runtime.graph, body.question, runtime.settings, body.classifier, body.local_model)
         except LLMUnavailableError as e:
             log.error("All LLM providers failed: %s", e)
             raise HTTPException(503, e.public_detail) from e
@@ -272,6 +292,10 @@ def create_app(factory: Callable[[], Runtime] = build_runtime) -> FastAPI:
           `data` payload (retrieval ranking, guard checks, execution sample...).
         - `final` (the AskResponse) or `error`, always last.
 
+        The body may carry `classifier` ("llm" | "local" | "cascade") and `local_model`
+        ("tev1" | "d1") to override the server's settings for this question; the classify
+        `node` event reports what was used (`classifier`, `local_model`, `decided_by`).
+
         Clients must ignore event types and keys they do not know. Errors after the response has started cannot change the HTTP status, so they are
         sent as an `error` event carrying the status /ask would have used.
         """
@@ -279,7 +303,7 @@ def create_app(factory: Callable[[], Runtime] = build_runtime) -> FastAPI:
         # A sync generator: Starlette iterates it in a threadpool, so the blocking graph
         # calls do not stall the event loop.
         return StreamingResponse(
-            stream_lines(runtime, body.question), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+            stream_lines(runtime, body.question, body.classifier, body.local_model), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
         )
 
     @app.get("/", include_in_schema=False)
@@ -298,6 +322,8 @@ def create_app(factory: Callable[[], Runtime] = build_runtime) -> FastAPI:
             llm_providers=runtime.llm_providers,
             classifier=runtime.settings.classifier,
             local_classifier=runtime.local_check() if runtime.local_check else None,
+            local_model=runtime.settings.local_classifier_model,
+            local_models=runtime.local_models_check() if runtime.local_models_check else {},
             replay=bool(runtime.settings.replay_dir),
         )
 

@@ -218,7 +218,7 @@ def test_health_with_fakes():
     with make_client(happy_llm(), **ok) as c:
         assert c.get("/health").json() == {
             "status": "ok", "database": True, "schema_index": True, "llm_providers": ["gemini"],
-            "classifier": "llm", "local_classifier": None, "replay": False,
+            "classifier": "llm", "local_classifier": None, "local_model": "tev1", "local_models": {}, "replay": False,
         }
     down = dict(db_check=lambda: False, index_check=lambda: pytest.fail("not asked when DB is down"))
     with make_client(happy_llm(), **down) as c:
@@ -271,7 +271,7 @@ def test_stream_happy_path_events_in_order():
     ]  # fmt: skip
     by = {e["node"]: e for e in nodes_of(evs)}
     assert by["classify"]["data"] == {
-        "in_scope": True, "language": "en", "reason": "r", "decided_by": "llm", "p_in": None,
+        "in_scope": True, "language": "en", "reason": "r", "classifier": "llm", "decided_by": "llm", "p_in": None,
         "local_ms": None, "local_model": None, "local_unavailable": False,
     }  # fmt: skip
     assert by["classify"]["llm"]["model"] == "fake-model" and by["classify"]["cost_usd"] is None
