@@ -67,6 +67,9 @@ def make_classify(deps: Deps) -> Node:
             details["local_unavailable"] = True
         if score:
             details |= {"p_in": round(score.p_in, 4), "local_ms": score.latency_ms, "local_model": score.model}
+            if score.detail:
+                band = {"threshold": s.local_threshold} if mode == "local" else {"low": s.cascade_low, "high": s.cascade_high}
+                details["local"] = {**score.detail, "mode": mode, **band}
             in_scope = local_verdict(mode, score.p_in)
             if in_scope is not None:
                 details["decided_by"] = "local"

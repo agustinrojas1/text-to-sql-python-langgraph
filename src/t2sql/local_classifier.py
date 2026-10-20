@@ -41,6 +41,9 @@ class ScopeScore:
     p_in: float  # probability that the database can answer the question, 0..1
     latency_ms: float
     model: str  # "tev1"
+    # What was sent and read, for display: the requests (prompts, per-order probabilities) of the
+    # scorer. Optional, so scorers that have nothing to show stay valid.
+    detail: dict[str, Any] | None = None
 
 
 class ScopeScorer(Protocol):
@@ -118,7 +121,8 @@ class Tev1Scorer(_LlamaServerScorer):
             "cache_prompt": False,  # the question comes first in the prompt, nothing to reuse
         }
 
-    def _parse(self, body: Any, swap: bool = False) -> float:
+    def _letters(self, body: Any) -> tuple[float, float]:
+        """P("A"), P("B") of the one generated token."""
         probs: dict[str, float] = {}
         for t in body["completion_probabilities"][0]["top_logprobs"]:
             p = math.exp(t["logprob"]) if "logprob" in t else float(t["prob"])
@@ -126,21 +130,42 @@ class Tev1Scorer(_LlamaServerScorer):
         a, b = probs.get("A", 0.0), probs.get("B", 0.0)
         if a + b < self.MIN_LETTER_MASS:
             raise ValueError(f"probability mass on A/B is only {a + b:.3f}")
+        return a, b
+
+    def _parse(self, body: Any, swap: bool = False) -> float:
+        a, b = self._letters(body)
         return (b if swap else a) / (a + b)
 
     def score(self, question: str) -> ScopeScore:
+        requests: list[dict[str, Any]] = []
         ps: list[float] = []
         latency = 0.0
         for swap in (False, True):
             path, payload = self._request(question, swap)
             start = time.perf_counter()
             body = self._http(self._base + path, payload, self._timeout)
-            latency += (time.perf_counter() - start) * 1000
+            ms = (time.perf_counter() - start) * 1000
+            latency += ms
             try:
-                ps.append(self._parse(body, swap))
+                a, b = self._letters(body)
             except (KeyError, IndexError, TypeError, ValueError) as e:
                 raise LocalClassifierUnavailable(f"unexpected {self.model} response: {type(e).__name__}: {e}") from e
-        return ScopeScore(p_in=sum(ps) / 2, latency_ms=round(latency, 1), model=self.model)
+            ps.append((b if swap else a) / (a + b))
+            requests.append({
+                "order": "swapped" if swap else "in_first",
+                "in_letter": "B" if swap else "A",  # the option letter that meant "in scope"
+                "prompt": payload["prompt"],
+                "p_a": round(a, 4),
+                "p_b": round(b, 4),
+                "p_in": round(ps[-1], 4),
+                "latency_ms": round(ms, 1),
+            })  # fmt: skip
+        detail = {
+            "endpoint": self._base + path,
+            "params": {k: payload[k] for k in ("n_predict", "n_probs", "temperature")},
+            "requests": requests,
+        }
+        return ScopeScore(p_in=sum(ps) / 2, latency_ms=round(latency, 1), model=self.model, detail=detail)
 
 
 SCORERS: dict[str, type[_LlamaServerScorer]] = {"tev1": Tev1Scorer}

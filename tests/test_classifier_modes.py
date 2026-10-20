@@ -35,7 +35,9 @@ class FakeScorer:
         o = self.outcomes.pop(0)
         if isinstance(o, Exception):
             raise o
-        return ScopeScore(p_in=o, latency_ms=180.0, model=self.model)
+        return ScopeScore(p_in=o, latency_ms=180.0, model=self.model, detail=self.detail)
+
+    detail = None
 
     def available(self):
         return self.up
@@ -290,3 +292,32 @@ def test_classifier_flag_reaches_settings_and_meta(monkeypatch, tmp_path):
     assert meta["classifier"] == "cascade" and meta["local_classifier"][0] == seen["settings"].local_classifier_model
     with pytest.raises(SystemExit):
         ev.main(["--fake", "--classifier", "nope"])
+
+
+# ---------------------------------------------------------------- local prompt details
+
+
+DETAIL = {"endpoint": "http://x/completion", "params": {"n_predict": 1}, "requests": [{"order": "in_first", "prompt": "P"}]}
+
+
+def with_detail(scorer):
+    scorer.detail = DETAIL
+    return scorer
+
+
+def test_local_details_present_when_decided_locally_and_when_escalated():
+    for mode, p, steps, by in [("cascade", 0.97, sql_steps(), "local"), ("cascade", 0.5, [llm_scope(), *sql_steps()], "llm"),
+                               ("local", 0.9, sql_steps(), "local")]:
+        ev_ = stream_classify(mode, with_detail(FakeScorer(p)), steps)
+        loc = ev_["data"]["local"]
+        assert ev_["data"]["decided_by"] == by and loc["requests"][0]["prompt"] == "P" and loc["mode"] == mode
+        assert (loc["threshold"] if mode == "local" else (loc["low"], loc["high"])) == (0.5 if mode == "local" else (0.2, 0.8))
+    s, _ = run("How many customers?", "cascade", with_detail(FakeScorer(0.5)), [llm_scope(), *sql_steps()])
+    assert classify_entry(s)["details"]["local"]["endpoint"] == "http://x/completion"
+
+
+def test_local_details_absent_in_llm_mode_and_when_unavailable():
+    ev_ = stream_classify("llm", with_detail(FakeScorer()), [llm_scope(), *sql_steps()])
+    assert "local" not in ev_["data"]
+    ev_ = stream_classify("cascade", FakeScorer(LocalClassifierUnavailable("x")), [llm_scope(), *sql_steps()])
+    assert "local" not in ev_["data"]

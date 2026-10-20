@@ -209,6 +209,8 @@ def node_event(node: str, update: dict[str, Any]) -> dict[str, Any]:
             "local_model": details.get("local_model"),
             "local_unavailable": bool(details.get("local_unavailable")),
         }
+        if details.get("local"):  # what Tev1 was sent and answered (absent in llm mode / when it was down)
+            data["local"] = details["local"]
     elif node == "retrieve_schema":
         data = _retrieve_data(update, details)
     elif node == "generate_sql":

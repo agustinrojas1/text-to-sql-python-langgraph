@@ -60,3 +60,19 @@ def classify_summary(d: dict) -> str:
 )
 def test_classify_summary(d, expected):
     assert classify_summary(d) == expected
+
+
+def local_verdict(local: dict, d: dict) -> str:
+    src = re.search(r"// LOCAL_PROMPT_START(.*?)// LOCAL_PROMPT_END", HTML.read_text(), re.S).group(1)
+    js = "const numOrNull = (v) => (typeof v === 'number' && isFinite(v) ? v : null);\n" + src
+    js += f"\nprocess.stdout.write(localVerdictText({json.dumps(local)}, {json.dumps(d)}));"
+    return subprocess.run(["node", "-e", js], capture_output=True, text=True, check=True).stdout
+
+
+def test_local_verdict_text():
+    reqs = [{"p_in": 0.97}, {"p_in": 0.21}]
+    band = {"requests": reqs, "low": 0.1, "high": 0.93}
+    assert local_verdict(band, {"decided_by": "llm", "p_in": 0.59}) == "P(in) = mean(0.97, 0.21) = 0.59 → unsure (band 0.10–0.93) → cloud LLM"
+    assert local_verdict(band, {"decided_by": "local", "in_scope": True}) == "P(in) = mean(0.97, 0.21) = 0.59 → in scope (band 0.10–0.93)"
+    thr = {"requests": reqs, "threshold": 0.5}
+    assert local_verdict(thr, {"decided_by": "local", "in_scope": False}).endswith("→ out of scope (threshold 0.50)")

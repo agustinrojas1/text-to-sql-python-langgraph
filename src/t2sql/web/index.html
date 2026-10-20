@@ -111,6 +111,7 @@ pre { margin: 6px 0; padding: 10px 12px; background: var(--panel); border: 1px s
 .caret { display: inline-block; width: .5em; height: 1.05em; background: var(--accent); vertical-align: text-bottom; margin-left: 2px; animation: blink 1s steps(2, start) infinite; }
 pre.msgtext { max-height: 280px; overflow: auto; }
 .msg .role { font: 600 var(--fs-xs) var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-top: 8px; }
+.msg .role.plain { text-transform: none; letter-spacing: 0; }
 details.disc { margin: 10px 0 0; }
 details.disc > summary { cursor: pointer; color: var(--muted); font-size: var(--fs-sm); }
 details.disc > summary:hover { color: var(--fg); }
@@ -448,6 +449,24 @@ function promptDisclosure(messages, chars) {
   }
   return disclosure(`Prompt sent · ${plural(msgs.length, "message")} · ${fmtInt(total)} chars`, wrap);
 }
+function localPromptDisclosure(local, d) {
+  const l = obj(local), reqs = arr(l.requests);
+  if (!reqs.length) return null;
+  const total = reqs.reduce((n, r) => n + String(obj(r).prompt ?? "").length, 0);
+  const wrap = el("div", { className: "msgs" });
+  const par = obj(l.params);
+  const meta = [l.endpoint, par.n_predict != null ? `n_predict ${par.n_predict}` : "", par.n_probs != null ? `n_probs ${par.n_probs}` : "",
+    par.temperature != null ? `temperature ${par.temperature}` : ""].filter(Boolean).join(" · ");
+  if (meta) wrap.append(tx("p", "lead muted", meta));
+  for (const r0 of reqs) {
+    const r = obj(r0), pa = numOrNull(r.p_a), pb = numOrNull(r.p_b), pi = numOrNull(r.p_in);
+    const head = `in-scope = ${r.in_letter ?? "?"}` + (pa != null && pb != null ? ` · P(A) = ${pa.toFixed(3)} · P(B) = ${pb.toFixed(3)}` : "")
+      + (pi != null ? ` \u2192 P(in) = ${pi.toFixed(3)}` : "") + (numOrNull(r.latency_ms) != null ? ` · ${ms(r.latency_ms)}` : "");
+    wrap.append(el("div", { className: "msg" }, tx("div", "role plain", head), tx("pre", "msgtext", String(r.prompt ?? ""))));
+  }
+  wrap.append(tx("p", "lead", localVerdictText(l, d)));
+  return disclosure(`Local model prompt · ${d.local_model ?? "local"} · ${plural(reqs.length, "request")} · ${fmtInt(total)} chars`, wrap);
+}
 const tags = (items, cls = "tchip") => { const r = el("div", { className: "row" }); for (const t of items) r.append(tx("span", cls, String(t))); return r; };
 
 const cellText = (v) => (v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v));
@@ -644,6 +663,26 @@ function classifySummary(d) {
 }
 // CLASSIFY_SUMMARY_END
 
+// LOCAL_PROMPT_START
+/** The closing line of the local-model disclosure: how the two orders combine and what the thresholds made of it. */
+function localVerdictText(local, d) {
+  const l = local && typeof local === "object" ? local : {}, f = (v) => Number(v).toFixed(2);
+  const reqs = Array.isArray(l.requests) ? l.requests : [];
+  const ps = reqs.map((r) => Number(r && r.p_in)).filter(Number.isFinite);
+  const mean = ps.length ? ps.reduce((a, b) => a + b, 0) / ps.length : numOrNull(d.p_in);
+  let t = ps.length ? `P(in) = mean(${ps.map(f).join(", ")})` : "P(in)";
+  if (mean != null) t += ` = ${f(mean)}`;
+  const band = Number.isFinite(Number(l.low)) && Number.isFinite(Number(l.high));
+  const range = band ? `${f(l.low)}\u2013${f(l.high)}` : "";
+  const verdict = d.in_scope === true ? "in scope" : "out of scope";
+  if (d.decided_by === "local") {
+    if (l.threshold != null) return `${t} \u2192 ${verdict} (threshold ${f(l.threshold)})`;
+    return `${t} \u2192 ${verdict}` + (band ? ` (band ${range})` : "");
+  }
+  return `${t} \u2192 unsure` + (band ? ` (band ${range})` : "") + " \u2192 cloud LLM";
+}
+// LOCAL_PROMPT_END
+
 const RENDER = {};
 
 RENDER.classify = (turn, p, ev, d) => {
@@ -661,6 +700,8 @@ RENDER.classify = (turn, p, ev, d) => {
   if (lang) row.append(tx("span", "pill", lang));
   p.content.append(row, tx("p", "lead", by));
   if (d.reason) p.content.append(tx("p", "lead muted", String(d.reason)));
+  const lp = localPromptDisclosure(d.local, d);
+  if (lp) p.promptHost.prepend(lp);
   if (MODE_NAMES[d.classifier]) turn.modeEl.textContent = "Scope check: " + modeText(d.classifier, d.local_model);
   p.line.textContent = [inScope === true ? "in scope" : inScope === false ? "out of scope" : "", lang,
     classifySummary(d)].filter(Boolean).join(" · ");

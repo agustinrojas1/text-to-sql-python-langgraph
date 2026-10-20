@@ -158,7 +158,10 @@ Next to the composer there is a selector for how the scope check runs, per quest
 (local model only; the local model is always Tev1). The choice is remembered in the browser;
 if the Tev1 server is not reachable the page says so (it still works: the request falls back to
 the cloud LLM and the classify step says "local tev1 unavailable → cloud LLM"). Each turn shows
-which mode and model it used. The same
+which mode and model it used. In `Local` and `Cascade` the Classify step also has a
+"Local model prompt" disclosure with the exact prompts sent to Tev1 (both option orders), the
+probabilities it returned and how they became P(in), next to the cloud prompt when the LLM
+was asked too. The same
 choice is available over HTTP and on the command line: `/ask` and `/ask/stream` accept
 `"classifier": "llm" | "local" | "cascade"` and `"local_model": "tev1"` in the body
 (default: the server settings), and `t2sql ask --classifier cascade`.

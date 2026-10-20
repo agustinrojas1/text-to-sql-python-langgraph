@@ -230,3 +230,24 @@ def test_detect_language_mixed_follows_the_majority():
     assert detect_language("What is the total of ventas?") == "en"
     assert detect_language("Dame the top artists") == "en"
     assert detect_language("¿Which artist has more albums?") == "es"  # ¿ is decisive
+
+
+def test_tev1_score_exposes_both_requests():
+    http = SeqHttp([tev1_body(0.9, 0.1), tev1_body(0.3, 0.7)])
+    s = Tev1Scorer(settings(), http).score("How many customers?")
+    d = s.detail
+    assert d["endpoint"] == "http://llama:8090/completion"
+    assert d["params"] == {"n_predict": 1, "n_probs": 10, "temperature": 0}
+    r1, r2 = d["requests"]
+    assert (r1["order"], r1["in_letter"]) == ("in_first", "A") and (r2["order"], r2["in_letter"]) == ("swapped", "B")
+    assert r1["prompt"] == prompts.tev1_prompt("How many customers?", TABLES)
+    assert r2["prompt"] == prompts.tev1_prompt("How many customers?", TABLES, swap=True)
+    assert (r1["p_a"], r1["p_b"], r1["p_in"]) == (0.9, 0.1, 0.9)
+    assert (r2["p_a"], r2["p_b"], r2["p_in"]) == (0.3, 0.7, 0.7)
+    assert s.p_in == pytest.approx(0.8)
+
+
+def test_scope_score_detail_is_optional():
+    from t2sql.local_classifier import ScopeScore
+
+    assert ScopeScore(p_in=0.5, latency_ms=1.0, model="tev1").detail is None
