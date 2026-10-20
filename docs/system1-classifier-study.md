@@ -249,6 +249,44 @@ cloud calls only where the local model is not sure.
 - Revisit when Tev1's license is published.
 - Try clef-flash (9.4B) if VRAM allows.
 
+## Prompt hint experiment (2026-10-20)
+
+Observation: in cascade mode Tev1 gives middling P(in) to valid "best-selling / most popular"
+questions ("Cual es el artista de metal mas vendido?" 0.35, "¿Cuál es el álbum más vendido?"
+0.42, "Who is the best-selling metal artist?" 0.64), probably because it confuses this store's
+sales with worldwide music trivia. Hypothesis: one general sentence in the context Tev1 sees
+would fix it. Variant, appended after the table listing: "Questions about sales, purchases,
+revenue, best-selling or most popular items refer to this store's own sales records."
+Everything else unchanged; Tev1 only (no cloud calls), the 272 items, band 0.10 / 0.93.
+
+| Split | Prompt | AUC | Acc / OOS recall / false rej. at 0.5 | Decided locally | Leaks (OOS > 0.93) | False rejections (in < 0.10) |
+|---|---|---|---|---|---|---|
+| dev | current | 0.9545 | 0.875 / 0.817 / 0.062 | 70/136 (51.5%) | 0 | 0 |
+| dev | hint | 0.9590 | 0.882 / 0.831 / 0.062 | 72/136 (52.9%) | 0 | 0 |
+| test | current | 0.9569 | 0.904 / 0.873 / 0.062 | 72/136 (52.9%) | 0 | 0 |
+| test | hint | 0.9542 | 0.897 / 0.873 / 0.077 | 72/136 (52.9%) | **2** (Xf01, Xx03) | 0 |
+| all | current | 0.9560 | 0.890 / 0.845 / 0.062 | 142/272 (52.2%) | 0 | 0 |
+| all | hint | 0.9556 | 0.890 / 0.852 / 0.069 | 144/272 (52.9%) | **2** | 0 |
+
+The two new leaks are out-of-scope questions pushed above 0.93: Xf01, forecast, "How much
+revenue will we make next year?" (0.885 to 0.950) and Xx03, multi-intent, sales per country plus
+a recommendation (0.925 to 0.953). That is the expected side effect: a sentence that says "sales
+questions are about this store" also raises sales-flavoured questions that the database cannot
+answer. Forecast and multi-intent were already the weakest categories. Coverage gained only 2
+questions (on dev), and the targeted category barely moved: best_selling (6 items) mean P 0.751
+to 0.786, the Spanish "más vendido" album question 0.416 to 0.443 (still below 0.5), and the
+motivating examples got worse or stayed put (0.351 to 0.246, 0.644 to 0.489, 0.908 to 0.866 for
+the control). Other band-edge movements were small shuffles in both directions (15 items changed band: 10 in-scope ones by
+small steps around 0.93, none below 0.10, and 5 out-of-scope ones, of which 3 moved the safe way
+into the "out" zone and 2 are the leaks).
+
+Decision: rejected, prompt reverted. The decision rule was no new leaks above 0.93 on dev or
+test; it failed on test, and the benefit is within noise. As the dataset is small, a 0.01 to
+0.05 move is not evidence either way, but a leak is the costly direction. The cloud half of the
+cascade was not re-run (a Tev1 prompt change does not affect it). Better routes for these
+questions, untried: let the cloud decide them (they already fall in the band), or fine-tune/few-shot
+with store-sales examples, which needs a held-out set so the fix is not tuned on the test items.
+
 ## 10. How to reproduce
 
 Rounds 3 and 4 are reproducible from the repository (setup of `llama-server` and the model

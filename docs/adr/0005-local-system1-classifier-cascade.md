@@ -150,6 +150,8 @@ Design points:
 
 > Update 2026-10-20: after the evaluation, d1 support was removed from the code; Tev1 is the only local model. The history above is kept as written.
 
+> Update 2026-10-20: a general "store sales" hint added to Tev1's context (to lift valid best-selling questions) was tried and rejected: it created 2 new leaks above 0.93 on test (a forecast and a multi-intent question) and did not meaningfully raise coverage. The prompt stays as benchmarked and the band 0.10 / 0.93 is unchanged. See the study, "Prompt hint experiment".
+
 ## See also
 
 - [docs/system1-classifier-study.md](../system1-classifier-study.md): the chronological study behind this decision (four rounds, the bar, what failed).
