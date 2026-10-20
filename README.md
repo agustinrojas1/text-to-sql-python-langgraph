@@ -31,7 +31,13 @@ flowchart TD
 
 The diagram follows `src/t2sql/graph.py`. `repair` records the failed SQL and the reason,
 and `generate_sql` is called again with that history; at most 2 repairs per question. An
-empty result gets one retry and is then accepted as a valid answer.
+empty result gets one retry and is then accepted as a valid answer. Only errors in the query
+are repaired (guard rejections, SQL errors, statement timeouts, which also get a "write a
+cheaper query" hint). A database outage (cannot connect, connection dropped, server
+shutting down) is not: it propagates out of the graph, because rewriting valid SQL cannot
+fix it and would only spend LLM calls. The `attempts` counter is the loop guard; an explicit
+LangGraph `recursion_limit` derived from `T2SQL_MAX_REPAIRS` (17 for 2 repairs) is the
+second safety net.
 
 ## Features
 
@@ -45,7 +51,8 @@ empty result gets one retry and is then accepted as a valid answer.
   tables plus the tables that connect them through foreign keys, plus a small keyword score
   for business words. Its quality is measured as table recall.
 - **Capped repair loop** ([ADR 0003](docs/adr/0003-capped-repair-loop.md)): the model sees the
-  error (or the empty result) and retries, at most twice.
+  error (or the empty result) and retries, at most twice; database outages are never
+  "repaired", and a recursion limit backs up the counter.
 - **Tracing**: every node records latency, provider/model, tokens, cost and errors;
   `-v` prints it. Provider fallback (Gemini, Groq, Anthropic) behind one small interface.
 - **CLI** (`t2sql ask`, `t2sql index`), an **HTTP API** (FastAPI) and an **eval harness** (`python -m evals.run`).
@@ -67,11 +74,16 @@ allow 20 requests per day, so the default is `gemini-3.5-flash-lite`; Groq's
 docker compose up -d                 # Postgres 16 + pgvector, Chinook loaded, read-only role created
 uv sync
 cp .env.example .env                 # then set GOOGLE_API_KEY=... and/or GROQ_API_KEY=...
-uv run t2sql index                   # builds the schema index (downloads ~220 MB embedding model once)
+uv run t2sql index                   # builds the schema index (downloads the ~240 MB embedding model once)
 
 uv run t2sql ask "¿Qué clientes compraron canciones de Jazz?"
 uv run t2sql ask "Which 3 artists generated the most revenue?" -v
 ```
+
+The embedding model is cached in `~/.cache/t2sql/fastembed` (`T2SQL_EMBEDDING_CACHE_DIR`), so it is
+downloaded only once, also across reboots. After a reboot only the database container is down:
+run `docker compose up -d` again (if it is down, `t2sql ask` prints "Database unavailable" and
+the API answers 503).
 
 The answer, the executed SQL and the result table are printed. With `-v` it also prints the
 path through the graph, one row per node (provider/model, tokens in/out, latency, cost,
@@ -107,10 +119,11 @@ curl -s localhost:8000/ask -H 'content-type: application/json' \
 - `POST /ask` takes `{"question": "..."}` (1 to 500 characters; else 422). Add
   `?include_trace=true` to get the per-node `trace`. Out-of-scope questions and failures
   after the repair budget is spent are `200` (`in_scope: false`, or `error` set); `503` if no
-  LLM provider is configured or all of them failed; `500` with a generic message otherwise.
+  LLM provider is configured, all of them failed, or the database is unavailable
+  ("Database unavailable"); `500` with a generic message otherwise.
 - `GET /health` reports database reachability (read-only role), whether the schema index
-  exists, and the names of the LLM providers with a key. The app starts without API keys;
-  only `/ask` answers 503.
+  exists, and the names of the LLM providers with a key. The app starts without API keys
+  or with the database down; only `/ask` answers 503.
 - `Decimal` values are returned as floats and dates as ISO 8601 strings.
 
 ## Evals
@@ -290,12 +303,13 @@ tests/
 ## Testing
 
 ```bash
-uv run pytest                    # 379 tests
-uv run pytest -m "not integration"   # 289 tests, no database needed
+uv run pytest                    # 425 tests
+uv run pytest -m "not integration"   # 335 tests, no database needed
 ```
 
 Tests marked `integration` need `docker compose up -d` and are skipped automatically if
 the database is unreachable. They cover the read-only role and timeout, the graph against
 the real database with a scripted fake LLM, every reference SQL in the datasets (guard,
 non-empty result, below the row limit), and the eval harness end to end with the oracle
-LLM. No test needs an API key.
+LLM. The CLI (`typer` `CliRunner`), settings loading from `.env`, and the infrastructure-vs-query
+error split in `db.py` have their own tests. No test needs an API key.

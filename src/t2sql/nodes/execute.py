@@ -9,7 +9,12 @@ def make_execute(deps: Deps) -> Node:
         try:
             result = deps.executor(state["sql"])
         except QueryError as e:
-            return {"error": f"Query failed: {e.message}", "error_kind": "execution"}
+            message = f"Query failed: {e.message}"
+            if e.is_timeout:
+                # Repairable on purpose: a cheaper query (fewer joins, a filter, a smaller
+                # aggregation) can fit in the timeout. The hint steers the repair prompt.
+                message += " (the query took too long; write a cheaper one)"
+            return {"error": message, "error_kind": "execution"}
         return {
             "columns": result.columns,
             "rows": result.rows,

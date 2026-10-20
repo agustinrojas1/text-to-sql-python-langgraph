@@ -188,3 +188,25 @@ def test_lexical_weight_reorders_the_ranking():
     assert run(0.0).details["selected"] == ["track", "playlist"]
     boosted = run(0.5).details
     assert "customer" in boosted["selected"] and boosted["scores"]["customer"] > 0.3
+
+
+def test_fastembed_embedder_passes_cache_dir(monkeypatch):
+    import sys
+    import types
+
+    import numpy as np
+
+    from t2sql.schema_index import FastEmbedEmbedder
+
+    calls = {}
+
+    class FakeTextEmbedding:
+        def __init__(self, **kwargs):
+            calls.update(kwargs)
+
+        def embed(self, texts):
+            return [np.zeros(3) for _ in texts]
+
+    monkeypatch.setitem(sys.modules, "fastembed", types.SimpleNamespace(TextEmbedding=FakeTextEmbedding))
+    FastEmbedEmbedder("some/model", "/persist/cache").embed(["x"])
+    assert calls == {"model_name": "some/model", "cache_dir": "/persist/cache"}

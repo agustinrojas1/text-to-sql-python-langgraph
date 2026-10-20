@@ -112,3 +112,54 @@ def test_max_repairs_is_configurable():
     s_one = Settings(_env_file=None, max_repairs=1)
     llm, s = run([gen("DROP TABLE customer")] * 2, Executor(), s_one)
     assert s["attempts"] == 2 and path(s)[-1] == "respond_error"
+
+
+def test_database_outage_is_not_repaired():
+    # An outage must not burn repair attempts: it propagates after one execute, with no repair LLM call.
+    import pytest
+
+    from t2sql.db import DatabaseUnavailableError
+
+    ex = Executor(DatabaseUnavailableError("connection refused"))
+    llm = FakeLLM([ScopeDecision(in_scope=True, reason="r", language="en"), gen(GOOD)])
+    graph = build_graph(llm, lambda q: TABLES, SETTINGS, ex)
+    with pytest.raises(DatabaseUnavailableError):
+        run_question(graph, "How many customers?")
+    assert len(ex.calls) == 1
+    assert len([c for c in llm.calls if c.schema is GeneratedSql]) == 1
+
+
+def test_statement_timeout_is_repairable_and_hints_a_cheaper_query():
+    timeout = QueryError("canceling statement due to statement timeout", "57014")
+    ex = Executor(timeout, QueryResult(["n"], [{"n": 59}]))
+    llm, s = run([gen("SELECT count(*) FROM track a, track b"), gen(GOOD), "ok"], ex)
+    assert path(s).count("repair") == 1 and path(s)[-1] == "respond"
+    assert "statement timeout" in llm.calls[2].prompt and "cheaper" in llm.calls[2].prompt
+
+
+def test_recursion_limit_covers_the_longest_legal_path():
+    from t2sql.graph import RECURSION_MARGIN, recursion_limit
+
+    # Worst case, max_repairs=2: 2 + 3 generations * 3 nodes + 2 repairs + 1 final node = 14 steps.
+    assert recursion_limit(2) == 14 + RECURSION_MARGIN
+    assert recursion_limit(0) == 6 + RECURSION_MARGIN
+    # The longest real run (every attempt fails at execute) fits under the limit.
+    settings = Settings(_env_file=None, max_repairs=2)
+    ex = Executor(*[QueryError("boom")] * 3)
+    _, s = run([gen(GOOD)] * 3, ex, settings)
+    assert len(s["trace"]) == 14 and path(s)[-1] == "respond_error"
+    assert build_graph(FakeLLM([]), lambda q: TABLES, settings, ex).config["recursion_limit"] == 17
+
+
+def test_misbehaving_router_hits_recursion_limit_instead_of_looping():
+    import pytest
+    from langgraph.errors import GraphRecursionError
+
+    settings = Settings(_env_file=None, max_repairs=1)
+    llm = FakeLLM([ScopeDecision(in_scope=True, reason="r", language="en"), *[gen(GOOD)] * 50])
+    ex = Executor(*[QueryError("boom")] * 50)
+    graph = build_graph(llm, lambda q: TABLES, settings, ex)  # limit is computed here, for 1 repair
+    settings.max_repairs = 10_000  # the routers read this live: the attempts guard is now useless
+    with pytest.raises(GraphRecursionError):
+        run_question(graph, "How many customers?")
+    assert len(ex.calls) < 50  # it stopped by itself, long before the scripted responses ran out

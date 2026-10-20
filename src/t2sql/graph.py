@@ -4,6 +4,7 @@ classify -> (out of scope -> respond_out_of_scope -> END)
          -> retrieve_schema -> generate_sql -> validate_sql -> execute -> respond -> END
 A guard rejection, an execution error or a (once) empty result goes to repair ->
 generate_sql while attempts remain (T2SQL_MAX_REPAIRS); then respond_error / respond.
+A database outage (DatabaseUnavailableError) is not repairable: it propagates out of the graph.
 """
 
 from langgraph.graph import END, START, StateGraph
@@ -23,6 +24,22 @@ from t2sql.retrieval import SchemaRetriever
 from t2sql.schema_index import default_retriever
 from t2sql.tracing import append_trace_file, summarize_trace
 from t2sql.state import AgentState, Deps, Executor
+
+
+RECURSION_MARGIN = 3
+
+
+def recursion_limit(max_repairs: int) -> int:
+    """Supersteps of the longest legal path, plus a small margin.
+
+    Every node is one superstep. The path is classify, retrieve_schema, then up to
+    1 + max_repairs rounds of generate_sql, validate_sql, execute with a repair between
+    rounds, and finally respond / respond_error. The `attempts` counter is the normal loop
+    guard; this is the backstop if a router ever stops honouring it (the run then fails
+    with GraphRecursionError instead of looping, and spending LLM calls, indefinitely).
+    """
+    generations = 1 + max_repairs
+    return 2 + 3 * generations + max_repairs + 1 + RECURSION_MARGIN
 
 
 def build_graph(
@@ -64,13 +81,13 @@ def build_graph(
     g.add_edge("repair", "generate_sql")
     g.add_edge("respond", END)
     g.add_edge("respond_error", END)
-    return g.compile()
+    return g.compile().with_config({"recursion_limit": recursion_limit(settings.max_repairs)})
 
 
 def run_question(
     graph: CompiledStateGraph, question: str, settings: Settings | None = None
 ) -> AgentState:
-    """Run the graph, attach the trace summary and (if configured) append the trace file."""
+    """Run the graph (its recursion limit is set in build_graph), attach the trace summary and (if configured) append the trace file."""
     state = graph.invoke({"question": question, "attempts": 0, "attempt_history": [], "trace": []})
     state["summary"] = summarize_trace(state["trace"])
     if settings and settings.trace_file:

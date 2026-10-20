@@ -44,6 +44,9 @@ VALID = [
     "SELECT 1",
     "(SELECT name FROM artist)",
     "SELECT * FROM track;",
+    "SELECT 1; -- trailing comment",
+    "SELECT 1; /* trailing block comment */",
+    "SELECT 1;;",
     "-- hello\nSELECT * FROM track /* inline */",
 ]
 
@@ -267,3 +270,16 @@ def test_limit_uses_given_max():
 def test_validation_is_idempotent():
     once = ok("SELECT name FROM artist UNION SELECT title FROM album").sql
     assert ok(once).sql == once
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT 1; -- x\nDROP TABLE track",
+        "SELECT 1; /* x */ SELECT 2",
+        "SELECT 1;; SELECT 2",
+        "SELECT 1; -- c\nSELECT 2; -- d",
+    ],
+)
+def test_comment_after_semicolon_does_not_hide_a_second_statement(sql):
+    assert rejected(sql) == GuardCode.MULTIPLE_STATEMENTS

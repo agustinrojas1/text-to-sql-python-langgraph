@@ -1,6 +1,8 @@
 """Application settings, read from environment variables / .env."""
 
+import os
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import AliasChoices, Field, field_validator
@@ -21,6 +23,18 @@ CHINOOK_TABLES: tuple[str, ...] = (
 )
 
 
+def default_embedding_cache_dir() -> str:
+    """Persistent per-user fastembed cache (fastembed's own default lives in /tmp and is wiped).
+
+    Precedence: FASTEMBED_CACHE_PATH, then $XDG_CACHE_HOME/t2sql/fastembed, then
+    ~/.cache/t2sql/fastembed.
+    """
+    if explicit := os.environ.get("FASTEMBED_CACHE_PATH"):
+        return explicit
+    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return str(Path(base) / "t2sql" / "fastembed")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="T2SQL_", env_file=".env", extra="ignore", populate_by_name=True
@@ -39,6 +53,8 @@ class Settings(BaseSettings):
     retriever: Literal["auto", "pgvector", "all"] = "auto"
     # Multilingual (EN/ES), 384-dim, ~220 MB ONNX download on first use (fastembed).
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    # Where fastembed stores the downloaded model (default: a persistent per-user cache).
+    embedding_cache_dir: str = Field(default_factory=default_embedding_cache_dir)
     retrieval_top_k: int = 5
     # Weight of the keyword (lexical) score added to the embedding score; 0 = embeddings only.
     retrieval_lexical_weight: float = 0.5
@@ -60,7 +76,8 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-haiku-5-5"
     llm_timeout_s: float = 30
     llm_max_retries: int = 3  # per provider (429/503 backoff), before falling over to the next one
-    llm_temperature: float = 0
+    # None = provider default (nothing is sent). Gemini models with fixed sampling ignore it.
+    llm_temperature: float | None = 0
     # Minimum seconds between two calls to the same provider (0 = no throttle). For free tiers:
     # 5 requests/minute needs 12.
     llm_min_interval_s: float = 0

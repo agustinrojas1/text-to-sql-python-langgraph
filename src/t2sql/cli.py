@@ -4,10 +4,12 @@ from typing import Annotated, Any
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.syntax import Syntax
 from rich.table import Table
 
 from t2sql.config import get_settings
+from t2sql.db import DatabaseUnavailableError
 from t2sql.graph import build_graph, run_question
 from t2sql.llm import LLMUnavailableError, build_llm
 from t2sql.schema_index import DEFAULT_TABLE, META_SCHEMA, FastEmbedEmbedder, build_index
@@ -64,7 +66,7 @@ def _print_trace(trace: list[dict[str, Any]], summary: dict[str, Any]) -> None:
             f"{m['input_tokens']}/{m['output_tokens']}" if m else "",
             str(m.get("latency_ms", e["latency_ms"])) if m else str(e["latency_ms"]),
             _money(e["cost_usd"]) if m else "",
-            _cell(e["error"]),
+            escape(_cell(e["error"])),
             end_section=e is trace[-1],
         )
     s = summary
@@ -80,7 +82,7 @@ def _print_trace(trace: list[dict[str, Any]], summary: dict[str, Any]) -> None:
     console.print(table)
     for e in trace:
         if detail := _detail(e):
-            console.print(f"[dim]{e['node']}[/]: {detail}")
+            console.print(f"[dim]{e['node']}[/]: {escape(detail)}")
 
 
 @app.command()
@@ -93,16 +95,20 @@ def ask(
     try:
         llm = build_llm(settings)
     except LLMUnavailableError as e:
-        err.print(f"[red]{e}[/]")
+        err.print(f"[red]{escape(str(e))}[/]")
         raise typer.Exit(2) from e
 
     try:
         state = run_question(build_graph(llm, settings=settings), question, settings)
-    except Exception as e:  # LLM outage, DB down...
-        err.print(f"[red]{type(e).__name__}: {e}[/]")
+    except DatabaseUnavailableError as e:  # not repairable: the SQL is not the problem
+        err.print(f"[red]Database unavailable: {escape(str(e))}[/]")
+        raise typer.Exit(1) from e
+    except Exception as e:  # LLM outage...
+        err.print(f"[red]{type(e).__name__}: {escape(str(e))}[/]")
         raise typer.Exit(1) from e
 
-    console.print(f"\n[bold]{state['answer']}[/]\n")
+    # Text from the LLM or Postgres may contain "[...]", which rich would read as markup.
+    console.print(f"\n[bold]{escape(state['answer'])}[/]\n")
     if state.get("sql"):
         console.print(Syntax(state["sql"], "sql", theme="ansi_dark", word_wrap=True))
     if state.get("rows") is not None:
@@ -123,12 +129,12 @@ def index(
 ) -> None:
     """(Re)build the schema index (pgvector) used for schema RAG. Idempotent."""
     settings = get_settings()
-    embedder = FastEmbedEmbedder(settings.embedding_model)
+    embedder = FastEmbedEmbedder(settings.embedding_model, settings.embedding_cache_dir)
     console.print(f"Embedding with {embedder.name} (downloads ~220 MB on first use)...")
     try:
         n = build_index(embedder, settings, table=table, keywords=keywords)
     except Exception as e:
-        err.print(f"[red]{type(e).__name__}: {e}[/]")
+        err.print(f"[red]{type(e).__name__}: {escape(str(e))}[/]")
         raise typer.Exit(1) from e
     console.print(f"Indexed {n} documents into {META_SCHEMA}.{table}.")
 

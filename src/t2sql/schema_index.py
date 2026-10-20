@@ -2,7 +2,7 @@
 
 Storage is `t2sql_meta.schema_docs`, owned by the admin role. The read-only role
 has no privileges on that schema, so generated SQL can never read it.
-No ANN index on purpose: with ~100 rows an exact scan is faster than HNSW/ivfflat
+No ANN index on purpose: with 75 rows an exact scan is faster than HNSW/ivfflat
 and has perfect recall (an index only pays off beyond thousands of documents).
 """
 
@@ -30,7 +30,7 @@ DEFAULT_TABLE = "schema_docs"
 COLUMN_WEIGHT = 0.5  # weight of the column evidence when ranking a table
 TOP_COLUMNS = 2  # how many best column docs count per table
 MAX_BRIDGES = 3  # max intermediate tables when connecting two selected tables
-SEARCH_LIMIT = 60  # docs fetched per query (the index has ~100)
+SEARCH_LIMIT = 60  # docs fetched per query (the index has 75)
 
 STEM_LEN = 5  # crude stemmer: drop a plural "s", then keep the first STEM_LEN characters
 _STOPWORDS = frozenset(
@@ -50,8 +50,9 @@ class Embedder(Protocol):
 class FastEmbedEmbedder:
     """Local ONNX embeddings via fastembed (CPU, no API key). Model loads lazily."""
 
-    def __init__(self, model_name: str) -> None:
+    def __init__(self, model_name: str, cache_dir: str | None = None) -> None:
         self.name = model_name
+        self._cache_dir = cache_dir
         self._model: Any = None
         self._dim: int | None = None
 
@@ -65,7 +66,7 @@ class FastEmbedEmbedder:
         if self._model is None:
             from fastembed import TextEmbedding
 
-            self._model = TextEmbedding(model_name=self.name)
+            self._model = TextEmbedding(model_name=self.name, cache_dir=self._cache_dir)
         return [v.tolist() for v in self._model.embed(texts)]
 
 
@@ -326,7 +327,7 @@ def default_retriever(settings: Settings, embedder: Embedder | None = None):
 
     if settings.retriever == "all":
         return AllTablesRetriever(settings)
-    embedder = embedder or FastEmbedEmbedder(settings.embedding_model)
+    embedder = embedder or FastEmbedEmbedder(settings.embedding_model, settings.embedding_cache_dir)
     if index_exists(embedder.name, settings):
         return PgVectorRetriever(embedder, settings)
     if settings.retriever == "pgvector":

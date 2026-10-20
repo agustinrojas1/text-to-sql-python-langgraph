@@ -48,5 +48,9 @@ not to be safe.
   to the model.
 - The guard is an allow-list of tables, so adding a table to the agent's reach is an
   explicit configuration change (`T2SQL_ALLOWED_TABLES`), plus a `GRANT` in the database.
+- A statement that hits `statement_timeout` is reported as a query error and goes to the
+  repair loop with a "write a cheaper one" hint (ADR 0003); it is not treated as an outage.
+- A trailing `;` or `; -- comment` is accepted (it is not a second statement); a real second
+  statement is still rejected.
 - Not covered: expensive-but-legal queries within the timeout, and information that the
   allowed tables legitimately contain (no row-level security in this project).

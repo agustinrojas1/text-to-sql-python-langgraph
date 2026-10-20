@@ -165,3 +165,54 @@ def test_real_factories_construct_without_network():
     llm = build_llm(s)
     assert [p.provider for p in llm.providers] == ["gemini", "groq", "anthropic"]
     assert [p.model_name for p in llm.providers] == [s.gemini_model, s.groq_model, s.anthropic_model]
+
+
+def _gemini_kwargs(monkeypatch, model, temperature):
+    import langchain_google_genai
+
+    seen = {}
+
+    class FakeChat:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    monkeypatch.setattr(langchain_google_genai, "ChatGoogleGenerativeAI", FakeChat)
+    from t2sql.llm import _make_gemini
+
+    _make_gemini(
+        Settings(_env_file=None, google_api_key="fake", gemini_model=model, llm_temperature=temperature)
+    )
+    return seen
+
+
+def test_gemini_skips_temperature_for_fixed_sampling_models(monkeypatch):
+    assert "temperature" not in _gemini_kwargs(monkeypatch, "gemini-3.5-flash-lite", 0)
+
+
+def test_gemini_sends_temperature_when_supported(monkeypatch):
+    assert _gemini_kwargs(monkeypatch, "gemini-2.5-flash", 0)["temperature"] == 0
+    assert "temperature" not in _gemini_kwargs(monkeypatch, "gemini-2.5-flash", None)
+
+
+def test_gemini_real_client_emits_no_sampling_warning(recwarn):
+    from t2sql.llm import _make_gemini
+
+    llm = _make_gemini(Settings(_env_file=None, google_api_key="fake", gemini_model="gemini-3.5-flash-lite"))
+    assert llm._chat.temperature is None  # unset, so langchain has nothing to warn about
+    assert not [w for w in recwarn if "fixed sampling" in str(w.message)]
+
+
+def test_groq_keeps_temperature_zero(monkeypatch):
+    import langchain_groq
+
+    seen = {}
+
+    class FakeChat:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    monkeypatch.setattr(langchain_groq, "ChatGroq", FakeChat)
+    from t2sql.llm import _make_groq
+
+    _make_groq(Settings(_env_file=None, groq_api_key="fake"))
+    assert seen["temperature"] == 0

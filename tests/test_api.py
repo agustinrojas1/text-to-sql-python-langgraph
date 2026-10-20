@@ -123,6 +123,17 @@ def test_all_providers_failing_at_call_time_is_503():
     assert r.status_code == 503 and "secret-ish" not in r.text
 
 
+def test_database_outage_is_503_and_not_repaired():
+    from t2sql.db import DatabaseUnavailableError
+
+    llm = FakeLLM([scope(), GeneratedSql(sql="SELECT 1 FROM customer")])
+    with make_client(llm, error=DatabaseUnavailableError("connection refused to 10.0.0.5")) as c:
+        r = c.post("/ask", json={"question": "How many customers?"})
+    assert r.status_code == 503 and r.json() == {"detail": "Database unavailable; try again later"}
+    assert "10.0.0.5" not in r.text
+    assert llm.responses == []  # exactly classify + one generation: no repair call was attempted
+
+
 def test_unexpected_exception_is_generic_500(caplog):
     llm = FakeLLM([scope(), GeneratedSql(sql="SELECT 1 FROM customer")])
     with make_client(llm, error=RuntimeError("boom: password=hunter2")) as c:

@@ -20,7 +20,38 @@ class QueryError(Exception):
 
     @property
     def is_timeout(self) -> bool:
-        return self.sqlstate == "57014"  # query_canceled (statement_timeout)
+        """statement_timeout fired. Repairable: the repair prompt can ask for a cheaper query."""
+        return self.sqlstate == "57014"  # query_canceled
+
+
+class DatabaseUnavailableError(Exception):
+    """The database itself is unreachable or going away (not a problem with the SQL).
+
+    Never repairable: asking the LLM to rewrite valid SQL cannot fix an outage, so this
+    propagates out of the graph and the CLI / API report it (the API answers 503).
+    """
+
+
+def _is_infrastructure_error(e: psycopg.Error) -> bool:
+    """True for connection / server-availability failures, False for errors in the query.
+
+    Decided by sqlstate, not by exception class: `QueryCanceled` (statement timeout, 57014)
+    is also an `OperationalError`, and it is a query problem. No sqlstate means the error
+    never came from the server (cannot connect, connection dropped mid-query).
+    """
+    state = e.sqlstate
+    if state is None:
+        return isinstance(e, psycopg.OperationalError | psycopg.InterfaceError)
+    # 08 connection exception, 53 insufficient resources (e.g. too many connections),
+    # 57P0x admin / crash shutdown, cannot connect now, 58 system errors.
+    return state[:2] in ("08", "53", "58") or state.startswith("57P")
+
+
+def _raise_for(e: psycopg.Error) -> None:
+    message = e.diag.message_primary or str(e)
+    if _is_infrastructure_error(e):
+        raise DatabaseUnavailableError(message) from e
+    raise QueryError(message, e.sqlstate) from e
 
 
 @dataclass(frozen=True)
@@ -54,8 +85,7 @@ def execute_readonly(sql: str, settings: Settings | None = None) -> QueryResult:
                 columns = [c.name for c in cur.description or []]
                 rows = cur.fetchall()
     except psycopg.Error as e:
-        message = e.diag.message_primary or str(e)
-        raise QueryError(message, e.sqlstate) from e
+        _raise_for(e)
     return QueryResult(columns=columns, rows=rows)
 
 
@@ -125,7 +155,7 @@ def fetch_schema_metadata(settings: Settings | None = None) -> list[TableInfo]:
             pks = {(r["table_name"], r["column_name"]) for r in conn.execute(_PKS_SQL)}
             fks = conn.execute(_FKS_SQL).fetchall()
     except psycopg.Error as e:
-        raise QueryError(e.diag.message_primary or str(e), e.sqlstate) from e
+        _raise_for(e)
 
     info = {t: TableInfo(name=t) for t in tables}
     for r in columns:

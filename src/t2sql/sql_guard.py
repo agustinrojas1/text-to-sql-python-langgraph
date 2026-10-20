@@ -87,7 +87,10 @@ def validate_sql(sql: str, allowed_tables: set[str], max_limit: int) -> Validate
 
 def _parse_single_query(sql: str) -> exp.Expression:
     try:
-        statements = [s for s in sqlglot.parse(sql, read=DIALECT) if s is not None]
+        # A trailing `;` or `; -- comment` parses as an empty / Semicolon node, not a statement.
+        statements = [
+            s for s in sqlglot.parse(sql, read=DIALECT) if s is not None and not isinstance(s, exp.Semicolon)
+        ]
     except SqlglotError as e:
         raise SqlGuardError(GuardCode.PARSE_ERROR, str(e).splitlines()[0]) from e
     if not statements:

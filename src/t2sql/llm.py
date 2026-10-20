@@ -173,13 +173,25 @@ class FallbackLLM:
 # --- provider construction -------------------------------------------------
 
 
+def _gemini_ignores_sampling(model: str) -> bool:
+    """True for Gemini models with fixed sampling (langchain warns if temperature is passed)."""
+    try:
+        from langchain_google_genai.chat_models import _uses_fixed_sampling_and_disallows_prefill
+    except ImportError:  # private helper moved: fall back to sending the temperature
+        return False
+    return _uses_fixed_sampling_and_disallows_prefill(model)
+
+
 def _make_gemini(s: Settings) -> ChatModelLLM:
     from langchain_google_genai import ChatGoogleGenerativeAI
 
+    sampling: dict[str, Any] = {}
+    if s.llm_temperature is not None and not _gemini_ignores_sampling(s.gemini_model):
+        sampling["temperature"] = s.llm_temperature
     chat = ChatGoogleGenerativeAI(
         model=s.gemini_model,
         api_key=s.google_api_key,
-        temperature=s.llm_temperature,
+        **sampling,
         timeout=s.llm_timeout_s,
         retries=s.llm_max_retries,
     )
@@ -189,10 +201,13 @@ def _make_gemini(s: Settings) -> ChatModelLLM:
 def _make_groq(s: Settings) -> ChatModelLLM:
     from langchain_groq import ChatGroq
 
+    sampling: dict[str, Any] = {}
+    if s.llm_temperature is not None:
+        sampling["temperature"] = s.llm_temperature
     chat = ChatGroq(
         model=s.groq_model,
         api_key=s.groq_api_key,
-        temperature=s.llm_temperature,
+        **sampling,
         timeout=s.llm_timeout_s,
         max_retries=s.llm_max_retries,
     )

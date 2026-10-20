@@ -7,7 +7,8 @@ Status codes:
   repair budget is spent (`error` is set, `answer` is the failure message). Both are valid
   agent outcomes for a valid request, so the client always reads one response shape and
   decides from `in_scope` / `error`. 422 is reserved for invalid requests (FastAPI default).
-- 503: no LLM provider is configured, or every provider failed on this call.
+- 503: no LLM provider is configured, every provider failed on this call, or the database is
+  unreachable (an outage is never sent to the repair loop).
 - 500: anything unexpected. The detail is logged; the client gets a generic message.
 
 JSON values: `Decimal` becomes a float (Chinook money is numeric(10,2), so nothing is lost
@@ -31,6 +32,7 @@ from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, Field
 
 from t2sql.config import Settings, get_settings
+from t2sql.db import DatabaseUnavailableError
 from t2sql.graph import build_graph, run_question
 from t2sql.llm import PROVIDERS, LLMUnavailableError, build_llm
 from t2sql.schema_index import index_exists
@@ -201,6 +203,9 @@ def create_app(factory: Callable[[], Runtime] = build_runtime) -> FastAPI:
         except LLMUnavailableError as e:
             log.error("All LLM providers failed: %s", e)
             raise HTTPException(503, "All LLM providers failed; try again later") from e
+        except DatabaseUnavailableError as e:
+            log.error("Database unavailable: %s", e)
+            raise HTTPException(503, "Database unavailable; try again later") from e
         return to_response(state, include_trace)
 
     @app.get("/health", response_model=Health)
