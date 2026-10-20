@@ -177,3 +177,36 @@ def test_index_failure_exits_1_and_escapes(monkeypatch):
     monkeypatch.setattr(cli, "build_index", boom)
     r = runner.invoke(cli.app, ["index"])
     assert r.exit_code == 1 and "RuntimeError: bad [bold]thing" in r.output
+
+
+# ---------------------------------------------------------------- record
+
+
+def test_record_defaults_to_the_example_questions(monkeypatch, tmp_path):
+    from t2sql.replay import DEFAULT_QUESTIONS
+
+    asked = []
+
+    def fake_lines(runtime, q):
+        asked.append((q, runtime.settings.record_dir))
+        yield '{"type": "final", "in_scope": true, "error": null, "row_count": 3}\n'
+
+    class RT:
+        settings = Settings(_env_file=None)
+
+    monkeypatch.setattr(cli, "build_runtime", lambda: RT())
+    monkeypatch.setattr(cli, "stream_lines", fake_lines)
+    r = runner.invoke(cli.app, ["record", "--dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert asked == [(q, str(tmp_path)) for q in DEFAULT_QUESTIONS]
+    assert "3 row(s)" in r.output
+
+
+def test_record_reports_failures_and_exits_1(monkeypatch):
+    class RT:
+        settings = Settings(_env_file=None)
+
+    monkeypatch.setattr(cli, "build_runtime", lambda: RT())
+    monkeypatch.setattr(cli, "stream_lines", lambda rt, q: iter(['{"type": "error", "status": 503, "detail": "quota"}\n']))
+    r = runner.invoke(cli.app, ["record", "one question"])
+    assert r.exit_code == 1 and "not recorded" in r.output and "quota" in r.output

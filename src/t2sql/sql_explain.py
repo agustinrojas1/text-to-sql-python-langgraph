@@ -227,21 +227,17 @@ def _owner_of(scope: Scope, name: str, known: dict[str, set[str]]) -> tuple[str,
     """
     current: Scope | None = scope
     while current is not None:
-        tables = [
-            src
-            for src in current.sources.values()
-            if isinstance(src, exp.Table) and name in known.get(src.name, ())
-        ]
-        inner = [
-            src
-            for src in current.sources.values()
-            if isinstance(src, Scope) and name in src.expression.named_selects
-        ]
+        # selected_sources = what this query's own FROM / JOINs provide (`sources` also
+        # inherits the outer query's, which would make every correlated name look ambiguous).
+        provided = [src for _, src in current.selected_sources.values()]
+        tables = [s for s in provided if isinstance(s, exp.Table) and name in known.get(s.name, ())]
+        inner = [s for s in provided if isinstance(s, Scope) and name in s.expression.named_selects]
         if len(tables) + len(inner) == 1:
             return ("table", tables[0]) if tables else ("inner", None)
         if len(tables) + len(inner) > 1:
             return "none", None
-        if name in current.expression.named_selects:  # ORDER BY total, HAVING n > 1...
+        aliases = {e.alias for e in current.expression.expressions if isinstance(e, exp.Alias)}
+        if name in aliases:  # ORDER BY total, HAVING n > 1...
             return "inner", None
         current = current.parent
     return "none", None

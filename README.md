@@ -126,10 +126,18 @@ curl -s localhost:8000/ask -H 'content-type: application/json' \
   exists, and the names of the LLM providers with a key. The app starts without API keys
   or with the database down; only `/ask` answers 503.
 - `POST /ask/stream` takes the same body and answers `application/x-ndjson`: one JSON object
-  per line, a `node` event as each graph step finishes (node, attempt, latency, LLM
-  provider/model/tokens/cost, and a small payload: SQL, tables, row count, guard error...),
-  then one `final` event (the same fields as `/ask`) or an `error` event (`status` 503/500
-  with the same meaning as above, since the HTTP status is already sent).
+  per line, in the order things happen. Event types: `start` (a node begins), `prompt` (the
+  exact messages about to go to the LLM, for classify, generate_sql and respond), `token`
+  (best-effort live output of the LLM: the decoded `sql` so far for generate_sql, the answer
+  `text` so far for respond; providers that cannot stream, like Groq's structured output,
+  send the whole value in one event, or none), and `node` (a node finished: attempt, latency,
+  LLM provider/model/tokens/cost, error, and a `data` payload: the retrieval ranking with
+  dense and keyword scores, column matches, FK bridge paths and the schema text the model
+  sees; the generated SQL; the SQL guard's seven checks with tables, resolved columns,
+  clauses and the LIMIT it added; an execution sample; the repair reason). It ends with one
+  `final` event (the same fields as `/ask`) or an `error` event (`status` 503/500 with the
+  same meaning as above, since the HTTP status is already sent). Clients should ignore event
+  types and keys they do not know.
 - `Decimal` values are returned as floats and dates as ISO 8601 strings.
 
 ## Web UI
@@ -141,9 +149,25 @@ uv run uvicorn t2sql.api:app        # then open http://127.0.0.1:8000
 A single static page (`src/t2sql/web/index.html`, no build step, no external assets) served
 at `GET /`. It sends the question to `/ask/stream` and fills in a step list as the agent
 moves through classify, retrieve schema, generate SQL, validate, execute, repair and answer,
-with the latency of each step and an expandable detail (SQL, retrieval scores, tokens,
-cost). When it finishes it shows the answer, the result table, the SQL and the run totals.
+with the latency of each step and an expandable detail (SQL, retrieval scores, the prompt,
+guard checks, tokens, cost). When it finishes it shows the answer, the result table, the SQL and the run totals.
 Each question is independent: there is no conversation memory.
+
+## Demo without network
+
+The demo normally needs the cloud LLM and the internet. To run it offline, record the questions once while online, then replay them:
+
+```bash
+# online: saves one file per question in recordings/ (default: the five examples of the web UI)
+uv run t2sql record                          # or: uv run t2sql record "Top 3 artists by revenue" --dir demo/
+
+# offline: recorded questions stream back from disk, no LLM and no database call
+T2SQL_REPLAY_DIR=recordings uv run uvicorn t2sql.api:app
+```
+
+`T2SQL_RECORD_DIR` does the same recording for any run of the server (`/ask/stream` only), overwriting the file of that question. A run is saved only if it ends with a `final` event, so a failed run never replaces a good recording. Questions match after lowercasing, trimming and collapsing whitespace; a question without a recording runs the real agent. Replay sends the recorded lines unchanged, with the original pause between events capped at `T2SQL_REPLAY_MAX_GAP_S` (1.5 s by default). With replay on, `/health` reports `"replay": true` and the web UI shows a small "replay" badge in its header. Without either setting nothing changes.
+
+Recordings hold the full prompts and results of the run, so keep them out of the repository unless you want them there.
 
 ## Optional local classifier (cascade)
 
@@ -418,7 +442,8 @@ src/t2sql/
   catalog.py        table descriptions, column hints, keyword vocabulary
   llm.py            provider-agnostic interface, Gemini/Groq/Anthropic, fallback
   tracing.py        cost and trace summaries
-  cli.py            t2sql ask / t2sql index
+  cli.py            t2sql ask / index / record
+  replay.py         record and replay of /ask/stream runs (offline demo)
   api.py            FastAPI: POST /ask, GET /health
 evals/
   dataset.yaml      55 items with reference SQL     holdout.yaml  18-question probe set (retrieval)

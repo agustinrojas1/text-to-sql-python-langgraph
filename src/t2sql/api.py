@@ -1,4 +1,5 @@
-"""HTTP API: `POST /ask`, `POST /ask/stream` (NDJSON), `GET /health` and the web UI at `GET /`.
+"""HTTP API: `POST /ask`, `POST /ask/stream` (NDJSON, event types in its docstring), `GET /health`
+and the web UI at `GET /`.
 
 Run with `uv run uvicorn t2sql.api:app --reload`.
 
@@ -39,6 +40,7 @@ from t2sql.db import DatabaseUnavailableError
 from t2sql.graph import build_graph, run_question, stream_question
 from t2sql.llm import PROVIDERS, LLMUnavailableError, build_llm
 from t2sql.local_classifier import build_scorer
+from t2sql.replay import load_recording, record_lines, replay_lines
 from t2sql.schema_index import index_exists
 
 log = logging.getLogger("t2sql.api")
@@ -88,6 +90,7 @@ class Health(BaseModel):
     # Is the local scorer's server up? None when the classifier is "llm". Not part of `status`:
     # without it the cloud LLM classifies, so the service still works.
     local_classifier: bool | None
+    replay: bool = False  # T2SQL_REPLAY_DIR is set: recorded questions are replayed, no network needed
 
 
 # ---------------------------------------------------------------- runtime
@@ -196,6 +199,38 @@ def _error_line(status: int, detail: str) -> str:
     return json.dumps({"type": "error", "status": status, "detail": detail}) + "\n"
 
 
+def event_lines(runtime: "Runtime", question: str) -> Iterator[str]:
+    """The NDJSON lines of one live run of the graph. Failures become a final `error` line."""
+    try:
+        if runtime.graph is None:
+            raise HTTPException(503, runtime.llm_error or "No LLM provider is available")
+        for ev in stream_question(runtime.graph, question, runtime.settings):
+            if ev["type"] == "final":
+                ev = {"type": "final", **to_response(ev["state"], False).model_dump()}
+            yield json.dumps(json_safe(ev), ensure_ascii=False) + "\n"
+    except HTTPException as e:
+        yield _error_line(e.status_code, e.detail)
+    except LLMUnavailableError as e:
+        log.error("All LLM providers failed: %s", e)
+        yield _error_line(503, e.public_detail)
+    except DatabaseUnavailableError as e:
+        log.error("Database unavailable: %s", e)
+        yield _error_line(503, "Database unavailable; try again later")
+    except Exception:
+        log.exception("Unhandled error in /ask/stream")
+        yield _error_line(500, "Internal server error")
+
+
+def stream_lines(runtime: "Runtime", question: str) -> Iterator[str]:
+    """What `/ask/stream` sends: a recording if replay is on and one matches, else a live run
+    (saved to T2SQL_RECORD_DIR if set). With neither setting this is exactly `event_lines`."""
+    s = runtime.settings
+    if s.replay_dir and (events := load_recording(s.replay_dir, question)):
+        return replay_lines(events, s.replay_max_gap_s)
+    lines = event_lines(runtime, question)
+    return record_lines(lines, s.record_dir, question) if s.record_dir else lines
+
+
 def create_app(factory: Callable[[], Runtime] = build_runtime) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -227,36 +262,24 @@ def create_app(factory: Callable[[], Runtime] = build_runtime) -> FastAPI:
 
     @app.post("/ask/stream")
     def ask_stream(body: AskRequest, runtime: RuntimeDep) -> StreamingResponse:
-        """NDJSON: one `node` event per graph step, then one `final` or `error` event.
+        """NDJSON, one JSON object per line, in the order things happen:
 
-        Errors after the response has started cannot change the HTTP status, so they are
+        - `start`: a node begins (`node`, `attempt`).
+        - `prompt`: the exact messages about to go to the LLM (classify, generate_sql, respond).
+        - `token`: best-effort live LLM output for generate_sql (decoded `sql` so far) and
+          respond (`text` so far); may never arrive (fake LLM, provider that cannot stream).
+        - `node`: a node finished, with latency, LLM metadata, cost, error and a node-specific
+          `data` payload (retrieval ranking, guard checks, execution sample...).
+        - `final` (the AskResponse) or `error`, always last.
+
+        Clients must ignore event types and keys they do not know. Errors after the response has started cannot change the HTTP status, so they are
         sent as an `error` event carrying the status /ask would have used.
         """
-
-        def lines() -> Iterator[str]:
-            try:
-                if runtime.graph is None:
-                    raise HTTPException(503, runtime.llm_error or "No LLM provider is available")
-                for ev in stream_question(runtime.graph, body.question, runtime.settings):
-                    if ev["type"] == "final":
-                        ev = {"type": "final", **to_response(ev["state"], False).model_dump()}
-                    yield json.dumps(json_safe(ev), ensure_ascii=False) + "\n"
-            except HTTPException as e:
-                yield _error_line(e.status_code, e.detail)
-            except LLMUnavailableError as e:
-                log.error("All LLM providers failed: %s", e)
-                yield _error_line(503, e.public_detail)
-            except DatabaseUnavailableError as e:
-                log.error("Database unavailable: %s", e)
-                yield _error_line(503, "Database unavailable; try again later")
-            except Exception:
-                log.exception("Unhandled error in /ask/stream")
-                yield _error_line(500, "Internal server error")
 
         # A sync generator: Starlette iterates it in a threadpool, so the blocking graph
         # calls do not stall the event loop.
         return StreamingResponse(
-            lines(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+            stream_lines(runtime, body.question), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
         )
 
     @app.get("/", include_in_schema=False)
@@ -275,6 +298,7 @@ def create_app(factory: Callable[[], Runtime] = build_runtime) -> FastAPI:
             llm_providers=runtime.llm_providers,
             classifier=runtime.settings.classifier,
             local_classifier=runtime.local_check() if runtime.local_check else None,
+            replay=bool(runtime.settings.replay_dir),
         )
 
     return app

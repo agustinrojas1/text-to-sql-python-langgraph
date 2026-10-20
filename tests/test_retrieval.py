@@ -8,13 +8,15 @@ from t2sql.schema_index import (
     META_SCHEMA,
     PgVectorRetriever,
     aggregate_scores,
+    bridge_paths,
     build_documents,
     build_index,
+    column_hits,
     default_retriever,
     expand_with_bridges,
     fk_graph,
 )
-from t2sql.retrieval import AllTablesRetriever
+from t2sql.retrieval import AllTablesRetriever, schema_summary
 from t2sql.testing import FakeEmbedder, FakeLLM
 
 
@@ -38,6 +40,51 @@ def test_expand_is_bounded_and_ignores_disconnected():
     assert expand_with_bridges(["a", "f"], CHAIN) == []  # 4 intermediates > MAX_BRIDGES
     assert expand_with_bridges(["a", "f"], CHAIN, max_bridges=4) == ["b", "c", "d", "e"]
     assert expand_with_bridges(["a", "zzz"], CHAIN) == []
+
+
+def test_bridge_paths_are_whole_paths_and_agree_with_expand():
+    assert bridge_paths(["a", "c"], CHAIN) == [["a", "b", "c"]]
+    assert bridge_paths(["a", "d"], CHAIN) == [["a", "b", "c", "d"]]
+    assert bridge_paths(["a", "b"], CHAIN) == []  # adjacent: no interior
+    assert bridge_paths(["a", "f"], CHAIN) == []  # too far apart
+    # a path whose interior is already selected explains nothing new
+    assert bridge_paths(["a", "b", "c"], CHAIN) == []
+    for sel in (["a", "c"], ["a", "d"], ["a", "c", "side"]):
+        interior = {t for p in bridge_paths(sel, CHAIN) for t in p[1:-1]}
+        assert expand_with_bridges(sel, CHAIN) == sorted(interior - set(sel))
+
+
+def test_column_hits_top_per_table_only_for_requested_tables():
+    hits = [
+        ("t1", None, 0.9), ("t1", "a", 0.31), ("t1", "b", 0.52), ("t1", "c", 0.40), ("t1", "d", 0.1),
+        ("t2", "x", 0.2), ("t3", "y", 0.99),
+    ]  # fmt: skip
+    got = column_hits(hits, ["t1", "t2", "t4"])
+    assert got["t1"] == [{"column": "b", "score": 0.52}, {"column": "c", "score": 0.4}, {"column": "a", "score": 0.31}]
+    assert got["t2"] == [{"column": "x", "score": 0.2}]
+    assert got["t4"] == [] and "t3" not in got  # t3 is not in the final list; table docs (None) are not columns
+
+
+def test_schema_summary_matches_format_schema_content():
+    tables = [
+        TableInfo("artist", [ColumnInfo("artist_id", "integer", False, True), ColumnInfo("name", "text", True)]),
+        TableInfo(
+            "album",
+            [ColumnInfo("album_id", "integer", False, True), ColumnInfo("artist_id", "integer", False)],
+            [ForeignKey("artist_id", "artist", "artist_id")],
+        ),
+    ]
+    assert schema_summary(tables) == [
+        {"name": "artist", "columns": [
+            {"name": "artist_id", "type": "integer", "pk": True, "fk": None},
+            {"name": "name", "type": "text", "pk": False, "fk": None},
+        ]},
+        {"name": "album", "columns": [
+            {"name": "album_id", "type": "integer", "pk": True, "fk": None},
+            {"name": "artist_id", "type": "integer", "pk": False, "fk": "artist.artist_id"},
+        ]},
+    ]  # fmt: skip
+    assert schema_summary([]) == []
 
 
 def test_expand_ignores_self_reference():
@@ -114,6 +161,12 @@ def test_build_is_idempotent_and_retrieves_with_expansion(test_index):
     assert {"playlist", "track"} <= set(names)
     assert "playlist_track" in names  # bridge: selected or added by FK expansion
     assert res.details["retriever"] == "pgvector" and set(res.details["scores"]) >= set(res.details["selected"])
+    d = res.details
+    assert d["top_k"] == 3 and list(d["dense"]) == list(d["scores"])  # same tables, same (rank) order
+    assert set(d["lexical"]) == set(d["scores"])  # the default lexical weight is on
+    assert set(d["column_hits"]) == set(names) and all(len(v) <= 3 for v in d["column_hits"].values())
+    for path in d["bridge_paths"]:
+        assert set(path[1:-1]) & set(d["expanded"]) and path[0] in names and path[-1] in names
 
 
 @integration

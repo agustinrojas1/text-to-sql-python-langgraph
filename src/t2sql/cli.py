@@ -1,5 +1,6 @@
-"""Command line entry point: `t2sql ask "question"` and `t2sql index`."""
+"""Command line entry point: `t2sql ask "question"`, `t2sql index` and `t2sql record`."""
 
+import json
 from typing import Annotated, Any
 
 import typer
@@ -8,10 +9,12 @@ from rich.markup import escape
 from rich.syntax import Syntax
 from rich.table import Table
 
+from t2sql.api import build_runtime, stream_lines
 from t2sql.config import get_settings
 from t2sql.db import DatabaseUnavailableError
 from t2sql.graph import build_graph, run_question
 from t2sql.llm import LLMUnavailableError, build_llm
+from t2sql.replay import DEFAULT_QUESTIONS, recording_path
 from t2sql.schema_index import DEFAULT_TABLE, META_SCHEMA, FastEmbedEmbedder, build_index
 
 MAX_TABLE_ROWS = 20
@@ -146,6 +149,35 @@ def index(
         err.print(f"[red]{type(e).__name__}: {escape(str(e))}[/]")
         raise typer.Exit(1) from e
     console.print(f"Indexed {n} documents into {META_SCHEMA}.{table}.")
+
+
+@app.command()
+def record(
+    questions: Annotated[
+        list[str] | None, typer.Argument(help="Questions to record (default: the web UI's examples)")
+    ] = None,
+    directory: Annotated[
+        str, typer.Option("--dir", "-d", help="Where to save (default: T2SQL_RECORD_DIR, else ./recordings)")
+    ] = "",
+) -> None:
+    """Record /ask/stream runs for the offline demo (see T2SQL_REPLAY_DIR). Needs the LLM and database."""
+    runtime = build_runtime()
+    target = directory or runtime.settings.record_dir or "recordings"
+    runtime.settings = runtime.settings.model_copy(update={"record_dir": target, "replay_dir": None})
+    failed = 0
+    for q in questions or DEFAULT_QUESTIONS:
+        last = ""
+        for last in stream_lines(runtime, q):
+            pass
+        ev = json.loads(last) if last else {}
+        if ev.get("type") != "final":
+            failed += 1
+            err.print(f"[red]not recorded[/] {escape(q)}: {escape(str(ev.get('detail', 'no events')))}")
+            continue
+        note = "out of scope" if not ev["in_scope"] else f"error: {ev['error']}" if ev["error"] else f"{ev['row_count']} row(s)"
+        console.print(f"recorded {escape(q)} -> {recording_path(target, q)} ({escape(note)})", soft_wrap=True)
+    if failed:
+        raise typer.Exit(1)
 
 
 def run() -> None:

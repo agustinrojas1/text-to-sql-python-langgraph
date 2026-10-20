@@ -28,6 +28,7 @@ from t2sql.retrieval import SchemaRetriever
 from t2sql.schema_index import default_retriever
 from t2sql.tracing import append_trace_file, summarize_trace
 from t2sql.state import AgentState, Deps, Executor
+from t2sql.streaming import TokenStream
 
 
 RECURSION_MARGIN = 3
@@ -109,6 +110,68 @@ def run_question(
     return _finish(graph.invoke(_initial_state(question)), question, settings)
 
 
+def _retrieve_data(update: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
+    """The retrieve_schema payload: the ranking, why each table is in, and what the model gets.
+
+    A ranking retriever (pgvector) leaves scores in `details`; a retriever without any
+    (AllTablesRetriever, a plain callable) yields one unscored, selected entry per table.
+    """
+    tables = update["candidate_tables"]
+    scores = details.get("scores")
+    name = details.get("retriever") or "unknown"
+    bridges = details.get("expanded") or []
+    if scores:
+        selected = details.get("selected") or tables
+        dense, lexical = details.get("dense") or {}, details.get("lexical") or {}
+        ranking = [
+            {
+                "table": t,
+                "score": sc,
+                "dense": dense.get(t),
+                "lexical": lexical.get(t),
+                "selected": t in selected,
+                "bridge": t in bridges,
+            }
+            for t, sc in scores.items()
+        ]
+    else:
+        selected = tables
+        ranking = [
+            {"table": t, "score": None, "dense": None, "lexical": None, "selected": True, "bridge": False}
+            for t in tables
+        ]
+    return {
+        "retriever": "all" if name == "AllTablesRetriever" else name,
+        "top_k": details.get("top_k"),
+        "tables": tables,
+        "selected": selected,
+        "bridges": bridges,
+        "bridge_paths": details.get("bridge_paths") or [],
+        "ranking": ranking,
+        "column_hits": details.get("column_hits") or {},
+        "schema": update.get("schema_tables") or [],
+        "schema_context": update.get("schema_context") or "",
+    }
+
+
+_VALIDATION_KEYS = (
+    "checks", "tables", "columns", "unresolved_columns", "clauses", "limit_enforced", "limit_added"
+)  # fmt: skip
+
+
+def _validate_data(update: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
+    """The validate_sql payload: the verdict plus the guard's explanation (see sql_explain)."""
+    err = update.get("error")
+    return {
+        "ok": not err,
+        "error": err,
+        "code": details.get("code"),
+        "input_sql": details.get("input_sql"),
+        "sql": None if err else update["sql"],
+        **{k: details.get(k) for k in _VALIDATION_KEYS},
+    }
+
+
 def node_event(node: str, update: dict[str, Any]) -> dict[str, Any]:
     """One streaming event from a node's state update (its trace entry plus a small payload)."""
     entry = update["trace"][-1]
@@ -126,22 +189,32 @@ def node_event(node: str, update: dict[str, Any]) -> dict[str, Any]:
             "local_unavailable": bool(details.get("local_unavailable")),
         }
     elif node == "retrieve_schema":
-        scores = details.get("scores") or {}
-        data = {
-            "tables": update["candidate_tables"],
-            "selected": details.get("selected") or update["candidate_tables"],
-            "bridges": details.get("expanded") or [],
-            "top_scores": dict(list(scores.items())[:6]),
-        }
+        data = _retrieve_data(update, details)
     elif node == "generate_sql":
-        data = {"sql": update["sql"], "assumptions": update.get("assumptions") or []}
+        data = {
+            "sql": update["sql"],
+            "tables_used": update.get("tables_used") or [],
+            "assumptions": update.get("assumptions") or [],
+        }
     elif node == "validate_sql":
-        data = {"ok": not err, "error": err, "sql": None if err else update["sql"]}
+        data = _validate_data(update, details)
     elif node == "execute":
-        data = {"ok": not err, "error": err, "row_count": details.get("row_count")}
+        data = {
+            "ok": not err,
+            "error": err,
+            "row_count": details.get("row_count"),
+            "columns": details.get("columns") or [],
+            "sample": details.get("sample") or [],
+        }
     elif node == "repair":
         failed = update["attempt_history"][-1]
-        data = {"kind": failed["kind"], "error": failed["error"], "failed_sql": failed["sql"]}
+        data = {
+            "kind": failed["kind"],
+            "error": failed["error"],
+            "failed_sql": failed["sql"],
+            "failed_attempt": details.get("failed_attempt", failed["attempt"]),
+            "attempts_left": details.get("attempts_left"),
+        }
     else:  # respond, respond_error, respond_out_of_scope
         data = {"answer": update["answer"]}
     return {
@@ -159,18 +232,34 @@ def node_event(node: str, update: dict[str, Any]) -> dict[str, Any]:
 def stream_question(
     graph: CompiledStateGraph, question: str, settings: Settings | None = None
 ) -> Iterator[dict[str, Any]]:
-    """Like run_question, but yields one `node` event per node execution as it finishes,
-    then a `final` event carrying the complete state (with summary). Exceptions from the
-    graph propagate to the caller, as with run_question.
+    """Like run_question, but yields live events as the graph runs, then a `final` event
+    carrying the complete state (with summary). Exceptions from the graph propagate to the
+    caller, as with run_question.
 
-    "updates" gives each node's own update; "values" gives the full state after each step,
-    so the last one is the final state without re-implementing the reducers here.
+    Three streams are merged, in the order they happen:
+    - "updates": each node's own update, turned into a `node` event when the node finishes;
+    - "custom": the `start` / `prompt` events the nodes emit themselves (already complete);
+    - "messages": raw LLM chunks, turned into best-effort `token` events (streaming.TokenStream)
+      for generate_sql and respond. A provider or model that does not stream just yields none.
+    "values" gives the full state after each step, so the last one is the final state without
+    re-implementing the reducers here.
     """
     state: AgentState = {}
-    for mode, chunk in graph.stream(_initial_state(question), stream_mode=["updates", "values"]):
+    tokens = TokenStream()
+    modes = ["updates", "values", "custom", "messages"]
+    for mode, chunk in graph.stream(_initial_state(question), stream_mode=modes):
         if mode == "values":
             state = chunk
-        else:
+        elif mode == "updates":
             for node, update in chunk.items():
                 yield node_event(node, update)
+        elif mode == "custom":
+            if chunk.get("type") == "start":
+                tokens.start(chunk["node"], chunk["attempt"])
+            yield chunk
+        else:  # messages: (message chunk, metadata)
+            message, metadata = chunk
+            event = tokens.feed(metadata.get("langgraph_node", ""), message)
+            if event:
+                yield event
     yield {"type": "final", "state": _finish(state, question, settings)}

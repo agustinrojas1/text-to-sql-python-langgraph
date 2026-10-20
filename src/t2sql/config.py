@@ -79,6 +79,13 @@ class Settings(BaseSettings):
     model_prices: dict[str, tuple[float, float]] = {}
     trace_file: str | None = None  # append one JSON line per question
 
+    # Demo without network: record_dir saves every /ask/stream run there (one file per question);
+    # replay_dir serves a matching recording instead of running the graph (no LLM, no database).
+    # Gaps between replayed events are capped at replay_max_gap_s. See replay.py.
+    record_dir: str | None = None
+    replay_dir: str | None = None
+    replay_max_gap_s: float = 1.5
+
     # LLM providers, tried in order; those without an API key are skipped.
     # T2SQL_LLM_PROVIDERS accepts a comma-separated list ("gemini,groq").
     llm_providers: Annotated[list[str], NoDecode] = ["gemini", "groq"]

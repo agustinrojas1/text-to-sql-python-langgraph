@@ -5,71 +5,184 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>t2sql</title>
 <style>
+/* ===== Tokens ===== */
 :root {
   --bg: #fafaf9; --fg: #1c1c1a; --muted: #6b6b66; --line: #e3e2de; --panel: #f1f0ed;
   --accent: #2f5fb3; --ok: #3d7a4f; --bad: #a8412f;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --accent-2: color-mix(in srgb, var(--accent) 40%, var(--bg));
+  --accent-soft: color-mix(in srgb, var(--accent) 11%, var(--bg));
+  --bad-soft: color-mix(in srgb, var(--bad) 8%, var(--bg));
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #161614; --fg: #e8e7e3; --muted: #9a9993; --line: #2e2d2a; --panel: #1f1f1c;
           --accent: #7ba3e8; --ok: #6fb085; --bad: #e08572; }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { color-scheme: light dark; }
-body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+body { --fs: 15px; --fs-sm: 13px; --fs-xs: 12px; --fs-sql: 13px;
+  margin: 0; background: var(--bg); color: var(--fg); font: var(--fs)/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+body.demo { --fs: 17px; --fs-sm: 15px; --fs-xs: 13.5px; --fs-sql: 15px; }
 a, button.link { color: var(--accent); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.col { max-width: 760px; margin: 0 auto; padding: 0 16px; }
-header { display: flex; justify-content: space-between; gap: 12px; padding: 16px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
-header .meta { color: var(--muted); text-align: right; }
+.col { max-width: 980px; margin: 0 auto; padding: 0 16px; }
+header { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+header .meta { color: var(--muted); margin-left: 12px; }
+header .badge { font-size: 12px; margin-left: 8px; padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); }
+#demo { font: inherit; font-size: 13px; color: var(--fg); background: none; border: 1px solid var(--line); border-radius: 999px; padding: 3px 12px; cursor: pointer; white-space: nowrap; }
+#demo[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
 main { padding: 24px 0 170px; }
 .muted { color: var(--muted); }
-.small { font-size: 13px; }
+.small { font-size: var(--fs-sm); }
+.mono { font-family: var(--mono); }
+.err { color: var(--bad); }
 
-.empty p { margin: 0 0 12px; }
+.empty p { margin: 0 0 12px; max-width: 70ch; }
 .empty ul { list-style: none; margin: 12px 0 0; padding: 0; }
 .empty li { margin: 6px 0; }
 button.link { background: none; border: 0; padding: 0; font: inherit; cursor: pointer; text-align: left; }
 button.link:hover { text-decoration: underline; }
 
-.turn { margin-bottom: 36px; }
-.q { font-weight: 600; margin: 0 0 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* ===== Turn and pipeline strip ===== */
+.turn { margin-bottom: 44px; }
+.q { font-weight: 600; font-size: 1.1em; margin: 0 0 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.stripwrap { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 0 0 14px; }
+.strip { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 4px; align-items: center; }
+.chip { display: inline-flex; align-items: center; gap: 4px; }
+.chip:not(:last-child)::after { content: "\2192"; color: var(--muted); opacity: .5; padding: 0 2px; }
+.cbox { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px; border: 1px solid var(--line); border-radius: 999px; font-size: var(--fs-sm); color: var(--muted); background: var(--bg); }
+.cdot { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--muted); flex: none; }
+.ctime { font-variant-numeric: tabular-nums; font-size: var(--fs-xs); min-width: 0; }
+.chip.pending .cbox { opacity: .6; }
+.chip.running .cbox { color: var(--fg); border-color: var(--accent); background: var(--accent-soft); }
+.chip.running .cdot { background: var(--accent); border-color: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+.chip.done .cbox { color: var(--fg); }
+.chip.done .cdot { background: var(--ok); border-color: var(--ok); }
+.chip.failed .cbox { color: var(--bad); border-color: var(--bad); }
+.chip.failed .cdot { background: var(--bad); border-color: var(--bad); }
+.loop { font-size: var(--fs-sm); color: var(--bad); border: 1px dashed var(--bad); border-radius: 999px; padding: 3px 11px; }
+.sstatus { font-size: var(--fs-sm); color: var(--muted); }
+@keyframes pulse { 50% { opacity: .25; } }
+@keyframes blink { to { visibility: hidden; } }
 
-.steps { list-style: none; margin: 0 0 16px; padding: 0; border-top: 1px solid var(--line); }
-.step { border-bottom: 1px solid var(--line); }
-.step summary, .step .row { display: grid; grid-template-columns: 16px 1fr auto; gap: 4px 10px; align-items: baseline; padding: 8px 0; cursor: pointer; list-style: none; }
-.step .row { cursor: default; }
-.step summary::-webkit-details-marker { display: none; }
+/* ===== Stage panels ===== */
+.panel { border: 1px solid var(--line); border-radius: 6px; margin: 0 0 10px; background: var(--bg); }
+.panel.repair { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); background: var(--bad-soft); }
+.phead { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto 10px; gap: 2px 10px; align-items: baseline; padding: 10px 12px; cursor: pointer; list-style: none; }
+.phead::-webkit-details-marker { display: none; }
 .mark { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--muted); align-self: center; justify-self: center; }
-.done .mark { background: var(--ok); border-color: var(--ok); }
-.failed .mark { background: var(--bad); border-color: var(--bad); }
-.running .mark { border-color: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
-@keyframes pulse { 50% { background: var(--accent); } }
-@media (prefers-reduced-motion: reduce) { .running .mark { animation: none; background: var(--accent); } }
-.label { font-weight: 500; }
-.label .att { color: var(--muted); font-weight: 400; }
-.lat { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
-.detail { grid-column: 2 / 4; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
-.detail.clip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); font-size: 12px; }
-.failed .detail { color: var(--bad); }
-.body { padding: 2px 0 12px 26px; font-size: 13px; }
-.body pre, details.sql pre { margin: 6px 0; padding: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; font: 13px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-.body dl { margin: 6px 0; display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; }
-.body dt { color: var(--muted); } .body dd { margin: 0; font-variant-numeric: tabular-nums; }
+.panel.running .mark { background: var(--accent); border-color: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+.panel.done .mark { background: var(--ok); border-color: var(--ok); }
+.panel.failed .mark, .panel.repair .mark { background: var(--bad); border-color: var(--bad); }
+.ptitle { min-width: 0; }
+.pname { font-weight: 600; }
+.patt { color: var(--muted); }
+.ptag { color: var(--muted); margin-left: 10px; font-size: var(--fs-sm); }
+.pmeta { color: var(--muted); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; text-align: right; }
+.chev { width: 7px; height: 7px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); align-self: center; transition: transform .15s; }
+.panel[open] > .phead .chev { transform: rotate(45deg); }
+.pline { grid-column: 2 / 5; color: var(--muted); font-size: var(--fs-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pline:empty, .panel[open] > .phead .pline { display: none; }
+.pbody { padding: 2px 14px 14px 36px; font-size: var(--fs-sm); }
+.pbody > :first-child { margin-top: 0; }
+.pstatus { color: var(--muted); margin: 0 0 8px; }
+.pstatus .sub { display: block; font-size: var(--fs-xs); }
+.lead { margin: 0 0 8px; }
+.sec { margin: 16px 0 6px; font-size: var(--fs-sm); font-weight: 600; }
+.note { margin: 6px 0 0; color: var(--muted); font-size: var(--fs-xs); }
 
-.answer { white-space: pre-wrap; margin: 0 0 16px; }
-.err { color: var(--bad); }
-.tablewrap { max-height: 330px; overflow: auto; border: 1px solid var(--line); border-radius: 4px; }
-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.pill { display: inline-block; padding: 1px 10px; border: 1px solid var(--line); border-radius: 999px; font-size: var(--fs-xs); white-space: nowrap; }
+.pill.ok { color: var(--ok); border-color: currentColor; }
+.pill.bad { color: var(--bad); border-color: currentColor; }
+.pill.acc { color: var(--accent); border-color: currentColor; }
+.pill.dash { border-style: dashed; color: var(--muted); }
+.row { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin: 0 0 8px; }
+.tchip { font: var(--fs-xs) var(--mono); padding: 2px 8px; border-radius: 4px; background: var(--panel); border: 1px solid var(--line); overflow-wrap: anywhere; }
+.tchip em { font-style: normal; color: var(--muted); margin-left: 4px; }
+
+/* SQL */
+pre { margin: 6px 0; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; font: var(--fs-sql)/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.s-kw { color: var(--accent); font-weight: 600; }
+.s-fn { color: var(--accent); }
+.s-str { color: var(--ok); }
+.s-num { color: var(--bad); }
+.s-cm { color: var(--muted); font-style: italic; }
+.caret { display: inline-block; width: .5em; height: 1.05em; background: var(--accent); vertical-align: text-bottom; margin-left: 2px; animation: blink 1s steps(2, start) infinite; }
+pre.msgtext { max-height: 280px; overflow: auto; }
+.msg .role { font: 600 var(--fs-xs) var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-top: 8px; }
+details.disc { margin: 10px 0 0; }
+details.disc > summary { cursor: pointer; color: var(--muted); font-size: var(--fs-sm); }
+details.disc > summary:hover { color: var(--fg); }
+
+/* Ranking chart */
+.rank { display: grid; gap: 7px; margin: 10px 0 6px; }
+.rrow { display: grid; grid-template-columns: minmax(96px, 150px) minmax(0, 1fr) 3.4em minmax(0, 112px); gap: 10px; align-items: center; }
+.rrow.dim { opacity: .5; }
+.rname { font: var(--fs-sm) var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rrow.sel .rname, .rrow.bridge .rname { font-weight: 600; }
+.rtrack { height: 12px; background: var(--panel); border-radius: 3px; overflow: hidden; }
+.rfill { height: 100%; display: flex; width: 0; transition: width .7s cubic-bezier(.2, .7, .2, 1); }
+.rseg { height: 100%; }
+.rseg.d { background: var(--accent); }
+.rseg.l { background: var(--accent-2); }
+.rseg + .rseg { border-left: 1px solid var(--bg); }
+.rtag { justify-self: start; }
+.rscore { font: var(--fs-xs) var(--mono); text-align: right; color: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 4px 0 0; font-size: var(--fs-xs); color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.hitrow { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin: 0 0 6px; }
+.hitrow .tname { font: 600 var(--fs-xs) var(--mono); min-width: 110px; }
+.chain { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 4px 0; }
+.chain .arrow { color: var(--muted); }
+.chain .tchip.br { border-style: dashed; }
+
+/* Schema cards */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin: 10px 0; }
+.scard { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; background: var(--bg); transition: opacity .4s; }
+.scard.dim { opacity: .45; }
+.scard h4 { margin: 0 0 6px; font: 600 var(--fs-sm) var(--mono); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.scols { list-style: none; margin: 0; padding: 0; font: var(--fs-xs) var(--mono); }
+.scols li { display: block; position: relative; padding: 1px 4px 1px 14px; border-radius: 3px; overflow-wrap: anywhere; }
+.scols li.used { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); font-weight: 600; }
+.scols .ct { color: var(--muted); font-weight: 400; margin-left: 6px; }
+.scols .pk { font-size: 10px; border: 1px solid var(--muted); color: var(--muted); border-radius: 3px; padding: 0 4px; font-weight: 400; margin-left: 6px; }
+.scols .fk { display: block; color: var(--muted); font-weight: 400; }
+.hitdot { position: absolute; left: 4px; top: .65em; width: 6px; height: 6px; border-radius: 50%; background: var(--accent-2); }
+.hitdot.off { background: transparent; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Guard */
+.fade { opacity: 0; transition: opacity .3s; }
+.fade.shown { opacity: 1; }
+.checks { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 5px; }
+.checks li { display: grid; grid-template-columns: 1.4em minmax(0, 1fr); gap: 6px; }
+.ckm { font-weight: 700; }
+.ck-ok .ckm { color: var(--ok); }
+.ck-bad .ckm, .ck-bad .ckd { color: var(--bad); }
+.ck-na { color: var(--muted); }
+.ckd { color: var(--muted); font-size: var(--fs-xs); margin-left: 8px; }
+.clauses { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 6px 0; }
+.clauses dt { font: 600 var(--fs-xs) var(--mono); color: var(--muted); padding-top: 2px; }
+.clauses dd { margin: 0; font: var(--fs-xs) var(--mono); overflow-wrap: anywhere; }
+.clauses dd div { padding: 1px 0; }
+.cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.cmp h5 { margin: 4px 0 0; font-size: var(--fs-xs); color: var(--muted); font-weight: 600; }
+
+/* Results */
+.answer { white-space: pre-wrap; margin: 0 0 12px; font-size: var(--fs); }
+.tablewrap { max-height: 330px; overflow: auto; border: 1px solid var(--line); border-radius: 4px; margin: 6px 0; }
+table { border-collapse: collapse; width: 100%; font-size: var(--fs-sm); }
 th, td { padding: 6px 10px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line); }
 th { position: sticky; top: 0; background: var(--panel); font-weight: 600; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 tr:last-child td { border-bottom: 0; }
-.caption { margin: 6px 0 14px; color: var(--muted); font-size: 13px; }
-details.sql > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
-details.sql button { margin-left: 10px; font: inherit; font-size: 13px; color: var(--accent); background: none; border: 1px solid var(--line); border-radius: 4px; padding: 1px 8px; cursor: pointer; }
-.foot { margin-top: 14px; color: var(--muted); font-size: 13px; }
+.caption { margin: 6px 0 12px; color: var(--muted); font-size: var(--fs-sm); }
+details.sql > summary { cursor: pointer; color: var(--muted); font-size: var(--fs-sm); }
+details.sql button { margin-left: 10px; font: inherit; font-size: var(--fs-sm); color: var(--accent); background: none; border: 1px solid var(--line); border-radius: 4px; padding: 1px 8px; cursor: pointer; }
+.foot { margin: 12px 0 0; color: var(--muted); font-size: var(--fs-sm); }
 
+/* Composer */
 .composer { position: fixed; left: 0; right: 0; bottom: 0; background: var(--bg); border-top: 1px solid var(--line); padding: 12px 0 14px; }
 .composer form { display: flex; gap: 10px; align-items: flex-end; }
 textarea { flex: 1; resize: none; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 9px 11px; max-height: 140px; }
@@ -77,17 +190,35 @@ textarea:disabled { opacity: .6; }
 .send { font: inherit; padding: 9px 16px; border-radius: 6px; border: 1px solid var(--fg); background: var(--fg); color: var(--bg); cursor: pointer; }
 .send:disabled { opacity: .4; cursor: default; }
 .hint { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+
+@media (max-width: 600px) {
+  .pbody { padding-left: 14px; }
+  .phead { grid-template-columns: 14px minmax(0, 1fr) 10px; }
+  .pmeta { grid-column: 2 / 4; grid-row: 2; text-align: left; }
+  .pline { grid-column: 2 / 4; grid-row: 3; }
+  .ptag { display: block; margin-left: 0; }
+  .rrow { grid-template-columns: minmax(0, 1fr) auto auto; gap: 3px 10px; }
+  .rrow .rtrack { grid-column: 1 / -1; grid-row: 2; }
+  .rrow .rscore { grid-column: 2; grid-row: 1; }
+  .rrow .rtag { grid-column: 3; grid-row: 1; }
+  .cmp { grid-template-columns: 1fr; }
+  .hitrow .tname { min-width: 0; width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  .chip.running .cdot, .panel.running .mark { background: var(--accent); }
+}
 </style>
 </head>
 <body>
 <div class="col">
   <header>
-    <strong>t2sql</strong>
-    <span class="meta" id="meta">Chinook, PostgreSQL</span>
+    <div><strong>t2sql</strong><span class="meta" id="meta">Chinook, PostgreSQL</span><span class="badge" id="replay" hidden title="Recorded questions are replayed from disk, no network needed">replay</span></div>
+    <button id="demo" type="button" aria-pressed="false" title="Keep every panel open, larger type, follow the running step">Demo view: off</button>
   </header>
   <main id="thread" aria-label="Conversation">
     <div class="empty" id="empty">
-      <p>Ask a question about the Chinook music store, in English or Spanish. You can watch each step of the agent as it runs. Every question is independent: the agent does not remember earlier ones.</p>
+      <p>Ask a question about the Chinook music store, in English or Spanish. Each question runs as a board: you see which tables were retrieved and why, the exact schema and prompt the model gets, the SQL being written, what the guard checked, the execution and the answer. Every question is independent: the agent does not remember earlier ones.</p>
       <ul>
         <li><button class="link ex">How many customers are there per country?</button></li>
         <li><button class="link ex">¿Quiénes compraron música de Jazz?</button></li>
@@ -109,100 +240,164 @@ textarea:disabled { opacity: .6; }
 </div>
 
 <script>
-const LABELS = {
-  classify: "Classify question", retrieve_schema: "Retrieve schema", generate_sql: "Generate SQL",
-  validate_sql: "Validate SQL", execute: "Execute", repair: "Repair",
-  respond: "Answer", respond_error: "Answer", respond_out_of_scope: "Answer",
+/* =====================================================================
+ * 1. Pure helpers (no DOM). Everything between the PURE markers is
+ *    extracted and unit-tested under node.
+ * ===================================================================== */
+// <PURE>
+const arr = (v) => (Array.isArray(v) ? v : []);
+const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
+const numOrNull = (v) => (typeof v === "number" && isFinite(v) ? v : null);
+const fmtInt = (n) => (typeof n === "number" && isFinite(n) ? n.toLocaleString("en-US") : String(n ?? ""));
+const ms = (v) => (v == null ? "" : v >= 1000 ? (v / 1000).toFixed(1) + " s" : Math.round(v) + " ms");
+const usd = (v) => (v == null ? "n/a" : "$" + (v < 0.01 ? v.toFixed(5) : v.toFixed(3)));
+const plural = (n, word) => `${fmtInt(n)} ${word}${n === 1 ? "" : "s"}`;
+
+const SQL_KW = new Set(("select from where join inner left right full outer cross on using group by order having limit offset as and or not in is " +
+  "null like ilike between distinct union intersect except all with recursive case when then else end asc desc over partition exists " +
+  "true false filter nulls first last interval lateral").split(" "));
+const SQL_FN = new Set(("sum count avg min max round coalesce cast extract date_trunc lag lead row_number rank dense_rank nullif " +
+  "lower upper length substring concat to_char").split(" "));
+
+/** Split SQL into [{k, s}] tokens; k is "kw" | "fn" | "str" | "num" | "cm" | "" (plain). Plain runs are merged. */
+function tokenizeSql(text) {
+  const out = [], re = /('(?:[^']|'')*'?)|(--[^\n]*)|("(?:[^"]|"")*"?)|(\b\d+(?:\.\d+)?\b)|([A-Za-z_][A-Za-z0-9_]*)|([\s\S])/g;
+  let plain = "", m;
+  const flush = () => { if (plain) { out.push({ k: "", s: plain }); plain = ""; } };
+  const src = String(text ?? "");
+  while ((m = re.exec(src))) {
+    let k = "";
+    if (m[1] != null) k = "str";
+    else if (m[2] != null) k = "cm";
+    else if (m[4] != null) k = "num";
+    else if (m[5] != null) {
+      const w = m[5].toLowerCase();
+      if (SQL_KW.has(w)) k = "kw";
+      else if (SQL_FN.has(w) && src[re.lastIndex] === "(") k = "fn";
+    }
+    if (k) { flush(); out.push({ k, s: m[0] }); } else plain += m[0];
+  }
+  flush();
+  return out;
+}
+
+/** Model for the ranking chart. Bar fill width is score / max score; the two segments split that width into the
+ *  dense part and the lexical contribution (score - dense). Null scores yield rows without a bar. */
+function barModel(ranking, bridges) {
+  const rows = arr(ranking).map((r0) => {
+    const r = obj(r0);
+    return { table: String(r.table ?? ""), score: numOrNull(r.score), dense: numOrNull(r.dense), lexical: numOrNull(r.lexical),
+             selected: !!r.selected, bridge: !!r.bridge };
+  });
+  const seen = new Set(rows.map((r) => r.table));
+  for (const b of arr(bridges)) if (!seen.has(b)) rows.push({ table: String(b), score: null, dense: null, lexical: null, selected: false, bridge: true });
+  const hasScores = rows.some((r) => r.score != null);
+  const max = Math.max(0, ...rows.map((r) => r.score ?? 0));
+  let hasLexical = false;
+  for (const r of rows) {
+    r.pct = r.score != null && max > 0 ? (Math.max(r.score, 0) / max) * 100 : 0;
+    let d = r.score, l = 0;
+    if (r.score != null && r.dense != null) { d = Math.max(Math.min(r.dense, r.score), 0); l = Math.max(r.score - r.dense, 0); }
+    r.lexContribution = l;
+    r.split = l > 0.0005 && d > 0;
+    const sum = (d ?? 0) + l;
+    r.densePct = r.split ? (d / sum) * 100 : 100;
+    r.lexPct = r.split ? 100 - r.densePct : 0;
+    if (r.split) hasLexical = true;
+  }
+  return { rows, hasScores, hasLexical, max };
+}
+
+/** Clause breakdown rows [{label, items:[string]}]; empty clauses are omitted. */
+function clauseRows(c0) {
+  const c = obj(c0), rows = [];
+  const add = (label, items) => {
+    const xs = items.filter((s) => s != null && String(s).trim() !== "").map(String);
+    if (xs.length) rows.push({ label, items: xs });
+  };
+  add("WITH", arr(c.ctes)); add("SELECT", arr(c.select)); add("FROM", c.from ? [c.from] : []); add("JOIN", arr(c.joins));
+  add("WHERE", c.where ? [c.where] : []); add("GROUP BY", arr(c.group_by)); add("HAVING", c.having ? [c.having] : []);
+  add("ORDER BY", arr(c.order_by)); add("LIMIT", c.limit != null ? [c.limit] : []);
+  return rows;
+}
+
+/** Which tables / "table.column" refs the validated SQL touches (lowercase). Not conclusive when nothing was resolved. */
+function schemaUsage(v0) {
+  const v = obj(v0), cols = new Set(), tables = new Set(arr(v.tables).map((s) => String(s).toLowerCase()));
+  for (const ref of arr(v.columns)) {
+    const parts = String(ref).toLowerCase().split(".");
+    if (parts.length < 2) continue;
+    const key = parts.slice(-2).join(".");
+    cols.add(key); tables.add(parts[parts.length - 2]);
+  }
+  return { cols, tables, conclusive: tables.size > 0 };
+}
+
+const CHECK_LABELS = {
+  parse: "Parses as PostgreSQL", single_statement: "A single statement", select_only: "Read-only: SELECT only",
+  no_forbidden_clauses: "No forbidden clauses", no_forbidden_functions: "No forbidden functions",
+  tables_allowed: "Only tables from the schema", limit: "Row limit enforced",
 };
+const checkLabel = (n) => CHECK_LABELS[n] || String(n ?? "check");
+const sameSql = (a, b) => String(a ?? "").replace(/\s+/g, " ").trim() === String(b ?? "").replace(/\s+/g, " ").trim();
+const LANGS = { en: "English", es: "Spanish" };
+// </PURE>
+
+/* =====================================================================
+ * 2. DOM helpers, global state, /health
+ * ===================================================================== */
 const $ = (s) => document.querySelector(s);
-const thread = $("#thread"), box = $("#q"), send = $("#send"), form = $("#form");
-let running = false;
+const thread = $("#thread"), box = $("#q"), send = $("#send"), form = $("#form"), demoBtn = $("#demo");
+const reducedMq = window.matchMedia ? matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
+const reduced = () => !!reducedMq.matches;
+let running = false, demo = false;
+let providers = [];          // from /health
+let lastLlm = null;          // most recent node.llm, to name the model in status lines
+let lastRankCount = null;    // number of ranked tables seen in a previous turn
+const turns = [];            // every turn on the page (for the demo toggle)
 
 function el(tag, props = {}, ...kids) {
   const e = Object.assign(document.createElement(tag), props);
   for (const k of kids) if (k != null) e.append(k);
   return e;
 }
-const ms = (v) => v == null ? "" : v >= 1000 ? (v / 1000).toFixed(1) + " s" : Math.round(v) + " ms";
-const usd = (v) => v == null ? "n/a" : "$" + (v < 0.01 ? v.toFixed(5) : v.toFixed(3));
+const tx = (tag, className, textContent) => el(tag, { className, textContent });
 
 fetch("/health").then((r) => r.json()).then((h) => {
-  $("#meta").textContent = "Chinook, PostgreSQL" + (h.llm_providers.length ? " · " + h.llm_providers.join(", ") : " · no LLM configured")
-    + (h.classifier !== "llm" ? ` · classifier: ${h.classifier} (local ${h.local_classifier ? "up" : "down"})` : "");
+  providers = arr(h.llm_providers);
+  $("#meta").textContent = "Chinook, PostgreSQL" + (providers.length ? " · " + providers.join(", ") : " · no LLM configured")
+    + (h.classifier && h.classifier !== "llm" ? ` · classifier: ${h.classifier} (local ${h.local_classifier ? "up" : "down"})` : "");
+  $("#replay").hidden = !h.replay;
 }).catch(() => {});
 
-// ---- step rows
-
-function detailLine(ev) {
-  const d = ev.data;
-  switch (ev.node) {
-    case "classify": {
-      const by = d.decided_by === "local" ? `local ${d.local_model} p=${d.p_in.toFixed(2)}`
-        : d.local_unavailable ? "cloud LLM (local unavailable)"
-        : d.p_in != null ? `cloud LLM (local ${d.local_model} p=${d.p_in.toFixed(2)}, unsure)` : "cloud LLM";
-      const why = !d.in_scope && d.decided_by !== "local" ? ` · ${d.reason}` : "";
-      return `${d.in_scope ? "in scope" : "out of scope"} · ${d.language} · ${by}${why}`;
-    }
-    case "retrieve_schema": {
-      const sel = d.tables.filter((t) => !d.bridges.includes(t));
-      return sel.join(", ") + (d.bridges.length ? ` +${d.bridges.length} bridge` : "");
-    }
-    case "generate_sql": return d.sql.replace(/\s+/g, " ");
-    case "validate_sql": {
-      if (!d.ok) return d.error;
-      const m = /LIMIT\s+(\d+)\s*;?\s*$/i.exec(d.sql);
-      return m ? `LIMIT ${m[1]} enforced` : "valid";
-    }
-    case "execute": return d.ok ? `${d.row_count} rows` : d.error;
-    case "repair": return `${d.kind}: ${d.error}`;
-    default: return "";
-  }
+/** SQL text -> DocumentFragment with keyword emphasis. Only text nodes and spans, never innerHTML. */
+function highlightSql(text) {
+  const frag = document.createDocumentFragment();
+  for (const t of tokenizeSql(text)) frag.append(t.k ? tx("span", "s-" + t.k, t.s) : document.createTextNode(t.s));
+  return frag;
 }
+const sqlPre = (text, extra = "") => { const p = el("pre", { className: "sql " + extra }); p.append(highlightSql(text)); return p; };
+const caret = () => tx("span", "caret", "");
 
-function bodyFor(ev) {
-  const d = ev.data, b = el("div", { className: "body" });
-  const pre = (t) => b.append(el("pre", { textContent: t }));
-  if (ev.node === "generate_sql") {
-    pre(d.sql);
-    if (d.assumptions.length) b.append(el("div", { textContent: "Assumptions: " + d.assumptions.join("; ") }));
-  } else if (ev.node === "validate_sql" && d.sql) pre(d.sql);
-  else if (ev.node === "retrieve_schema") {
-    const dl = el("dl");
-    for (const [t, s] of Object.entries(d.top_scores)) dl.append(el("dt", { textContent: t }), el("dd", { textContent: s.toFixed(3) }));
-    if (d.bridges.length) dl.append(el("dt", { textContent: "bridge tables" }), el("dd", { textContent: d.bridges.join(", ") }));
-    b.append(dl);
-  } else if (ev.node === "repair") pre(d.failed_sql);
-  if (ev.llm) {
-    b.append(el("div", { className: "muted", textContent:
-      `${ev.llm.provider} ${ev.llm.model} · ${ev.llm.input_tokens ?? "?"} in / ${ev.llm.output_tokens ?? "?"} out tokens · ${usd(ev.cost_usd)}` }));
-  }
-  return b.childNodes.length ? b : null;
+function disclosure(label, node, cls = "") {
+  const d = el("details", { className: "disc " + cls });
+  d.append(el("summary", { textContent: label }), node);
+  return d;
 }
-
-function stepRow(ev) {
-  const failed = !!ev.error;
-  const label = el("span", { className: "label", textContent: LABELS[ev.node] || ev.node });
-  if (ev.attempt > 1 && ["generate_sql", "validate_sql", "execute"].includes(ev.node)) {
-    label.append(el("span", { className: "att", textContent: ` · attempt ${ev.attempt}` }));
+function promptDisclosure(messages, chars) {
+  const msgs = arr(messages);
+  if (!msgs.length) return null;
+  const total = numOrNull(chars) ?? msgs.reduce((n, m) => n + String(obj(m).content ?? "").length, 0);
+  const wrap = el("div", { className: "msgs" });
+  for (const m0 of msgs) {
+    const m = obj(m0);
+    wrap.append(el("div", { className: "msg" }, tx("div", "role", String(m.role ?? "?")), tx("pre", "msgtext", String(m.content ?? ""))));
   }
-  const head = [el("span", { className: "mark" }), label, el("span", { className: "lat", textContent: ms(ev.latency_ms) }),
-                el("span", { className: "detail" + (ev.node === "generate_sql" ? " clip" : ""), textContent: detailLine(ev) })];
-  const body = bodyFor(ev);
-  const li = el("li", { className: "step " + (failed ? "failed" : "done") });
-  if (body) {
-    const sum = el("summary");
-    sum.append(...head);
-    li.append(el("details", {}, sum, body));
-  } else {
-    const row = el("div", { className: "row" });
-    row.append(...head);
-    li.append(row);
-  }
-  return li;
+  return disclosure(`Prompt sent · ${plural(msgs.length, "message")} · ${fmtInt(total)} chars`, wrap);
 }
+const tags = (items, cls = "tchip") => { const r = el("div", { className: "row" }); for (const t of items) r.append(tx("span", cls, String(t))); return r; };
 
-// ---- results
-
+const cellText = (v) => (v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v));
 function resultTable(cols, rows) {
   const isNum = cols.map((c) => rows.some((r) => typeof r[c] === "number") && rows.every((r) => r[c] == null || typeof r[c] === "number"));
   const t = el("table"), tr = el("tr");
@@ -211,18 +406,532 @@ function resultTable(cols, rows) {
   const tb = el("tbody");
   for (const r of rows) {
     const row = el("tr");
-    cols.forEach((c, i) => row.append(el("td", { textContent: r[c] ?? "", className: isNum[i] ? "num" : "" })));
+    cols.forEach((c, i) => row.append(el("td", { textContent: cellText(r[c]), className: isNum[i] ? "num" : "" })));
     tb.append(row);
   }
   t.append(tb);
   return el("div", { className: "tablewrap", tabIndex: 0 }, t);
 }
 
-function renderFinal(turn, f) {
-  turn.append(el("p", { className: "answer" + (f.error ? " err" : ""), textContent: f.answer }));
-  if (f.columns.length && f.rows.length) {
-    turn.append(resultTable(f.columns, f.rows));
-    turn.append(el("p", { className: "caption", textContent: `${f.row_count} row${f.row_count === 1 ? "" : "s"}` }));
+/** In demo view, keep the running panel's tail in view (above the fixed composer). Throttled to one frame. */
+let followQueued = false;
+function follow(p) {
+  if (!demo || !p || followQueued) return;
+  followQueued = true;
+  requestAnimationFrame(() => {
+    followQueued = false;
+    const limit = innerHeight - (($(".composer")?.offsetHeight ?? 100) + 16);
+    const r = p.root.getBoundingClientRect();
+    if (r.bottom > limit) {
+      const dy = Math.min(r.bottom - limit, r.top - 12);
+      if (dy > 1) scrollBy({ top: dy, behavior: reduced() ? "auto" : "smooth" });
+    }
+  });
+}
+
+/* =====================================================================
+ * 3. Turn: pipeline strip, timer, status
+ * ===================================================================== */
+const CHIPS = [["classify", "Classify"], ["retrieve", "Retrieve schema"], ["generate", "Generate SQL"],
+               ["validate", "Validate"], ["execute", "Execute"], ["answer", "Answer"]];
+const NODE_GROUP = { classify: "classify", retrieve_schema: "retrieve", generate_sql: "generate", validate_sql: "validate",
+  execute: "execute", repair: "repair", respond: "answer", respond_error: "answer", respond_out_of_scope: "answer" };
+const GROUP_CHIP = { classify: "classify", retrieve: "retrieve", generate: "generate", validate: "validate", execute: "execute", answer: "answer" };
+const ATTEMPT_GROUPS = new Set(["generate", "validate", "execute"]);
+
+function newTurn(question) {
+  const turn = { root: el("section", { className: "turn" }), panels: [], chips: {}, attempt: 0, finished: false,
+                 runningPanel: null, timerId: null, schemaPanel: null, schemaCols: new Map(), schemaCards: new Map(),
+                 schemaInfo: null, schemaNote: null, board: el("div", { className: "board" }) };
+  const strip = el("ol", { className: "strip" });
+  for (const [key, label] of CHIPS) {
+    const time = tx("span", "ctime", ""), att = tx("span", "catt", ""), name = tx("span", "cname", label);
+    const pill = el("span", { className: "cbox" }, el("span", { className: "cdot" }), name, att, time);
+    const li = el("li", { className: "chip pending" }, pill);
+    strip.append(li);
+    turn.chips[key] = { li, att, time, label };
+  }
+  turn.loop = tx("span", "loop", ""); turn.loop.hidden = true;
+  turn.statusEl = tx("span", "sstatus", "");
+  turn.statusEl.setAttribute("aria-live", "polite");
+  turn.statusEl.setAttribute("aria-atomic", "true");
+  turn.root.append(tx("p", "q", question), el("div", { className: "stripwrap" }, strip, turn.loop, turn.statusEl), turn.board);
+  return turn;
+}
+
+function setChip(turn, group, state, attempt, time) {
+  const c = turn.chips[GROUP_CHIP[group]];
+  if (!c) return;
+  c.li.className = "chip " + state;
+  c.att.textContent = attempt >= 2 && ATTEMPT_GROUPS.has(group) ? ` · ${attempt}` : "";
+  if (time != null) c.time.textContent = time;
+}
+
+function startTimer(turn, p) {
+  turn.runningPanel = { p, t0: performance.now() };
+  if (!turn.timerId) turn.timerId = setInterval(() => tick(turn), 100);
+  tick(turn);
+}
+function tick(turn) {
+  const r = turn.runningPanel;
+  if (!r) return;
+  const txt = ((performance.now() - r.t0) / 1000).toFixed(1) + " s";
+  r.p.meta.textContent = txt;
+  const c = turn.chips[GROUP_CHIP[r.p.group]];
+  if (c) c.time.textContent = txt;
+}
+function stopTimer(turn, p) {
+  if (turn.runningPanel && (!p || turn.runningPanel.p === p)) turn.runningPanel = null;
+  if (!turn.runningPanel && turn.timerId) { clearInterval(turn.timerId); turn.timerId = null; }
+}
+
+/* =====================================================================
+ * 4. Stage panels
+ * ===================================================================== */
+const PANELS = {
+  classify: { title: "Classify", tag: "Is this about the music store?" },
+  retrieve: { title: "Retrieve schema", tag: "Which tables matter?" },
+  schema: { title: "What the model sees", tag: "The schema it gets in the prompt" },
+  generate: { title: "Generate SQL", tag: "Assembling the query" },
+  validate: { title: "Validate", tag: "The guard" },
+  execute: { title: "Execute", tag: "Running it for real" },
+  repair: { title: "Repair", tag: "Trying again with the error" },
+  answer: { title: "Answer", tag: "" },
+};
+
+function makePanel(turn, group) {
+  const def = PANELS[group];
+  if (group === "generate") turn.attempt += 1;
+  const attempt = ATTEMPT_GROUPS.has(group) ? Math.max(turn.attempt, 1) : 0;
+  const root = el("details", { className: "panel g-" + group + " running" });
+  root.open = true;
+  const att = tx("span", "patt", attempt >= 2 ? ` · attempt ${attempt}` : "");
+  const meta = tx("span", "pmeta", ""), line = tx("span", "pline", "");
+  root.append(el("summary", { className: "phead" }, el("span", { className: "mark" }),
+    el("span", { className: "ptitle" }, tx("span", "pname", def.title), att, def.tag ? tx("span", "ptag", def.tag) : null),
+    meta, el("span", { className: "chev" }), line));
+  const statusMain = el("span"), statusSub = tx("span", "sub", "");
+  const status = el("div", { className: "pstatus" }, statusMain, statusSub);
+  const live = el("div", { className: "plive" }), content = el("div", { className: "pcontent" }), promptHost = el("div", { className: "pprompt" });
+  root.append(el("div", { className: "pbody" }, status, live, content, promptHost));
+  turn.board.append(root);
+  const p = { group, attempt, root, att, meta, line, status, statusMain, statusSub, live, content, promptHost,
+              finished: false, state: "running", node: "" };
+  turn.panels.push(p);
+  return p;
+}
+function setState(p, s) { p.state = s; p.root.className = "panel g-" + p.group + " " + s; }
+function setStatus(p, main, sub) {
+  p.statusMain.textContent = main;
+  if (sub !== undefined) p.statusSub.textContent = sub;
+  p.status.hidden = false;
+}
+
+/** The unfinished panel of a group (events for one node and attempt all land in the same panel). */
+function panelFor(turn, group, create) {
+  for (let i = turn.panels.length - 1; i >= 0; i--) {
+    const p = turn.panels[i];
+    if (p.group === group && !p.finished) return p;
+  }
+  return create ? makePanel(turn, group) : null;
+}
+
+const who = () => {
+  const prov = lastLlm?.provider ?? (providers.join(" / ") || null), model = lastLlm?.model;
+  return model && prov ? `${model} via ${prov}` : prov || model || "the model";
+};
+function runningText(turn, p) {
+  switch (p.group) {
+    case "classify": return "Deciding whether the question is about the music store…";
+    case "retrieve": return `Embedding the question and ranking ${lastRankCount ? lastRankCount + " " : "the "}tables…`;
+    case "generate": return p.attempt >= 2
+      ? `Attempt ${p.attempt} · the prompt now includes the failed SQL and the error. Asking ${who()} again…`
+      : `Asking ${who()} for the query…`;
+    case "validate": return "Parsing the SQL and running the guard checks…";
+    case "execute": return "Running the validated query on PostgreSQL (read-only)…";
+    case "repair": return "Preparing a retry with the error attached…";
+    default: return "Writing the answer…";
+  }
+}
+
+function metaText(ev) {
+  const bits = [];
+  if (ev.latency_ms != null) bits.push(ms(ev.latency_ms));
+  if (ev.llm) {
+    const l = obj(ev.llm);
+    bits.push(`${l.model ?? l.provider ?? "llm"}`);
+    if (l.input_tokens != null || l.output_tokens != null) bits.push(`${l.input_tokens ?? "?"} in / ${l.output_tokens ?? "?"} out`);
+    if (ev.cost_usd != null) bits.push(usd(ev.cost_usd));
+  }
+  return bits.join(" · ");
+}
+
+function finishPanel(turn, p, ev, failed) {
+  p.finished = true;
+  setState(p, p.group === "repair" ? "repair" : failed ? "failed" : "done");
+  p.status.hidden = true;
+  p.meta.textContent = metaText(ev);
+  stopTimer(turn, p);
+  setChip(turn, p.group, failed ? "failed" : "done", p.attempt, ev.latency_ms != null ? ms(ev.latency_ms) : null);
+  if (typeof ev.error === "string" && ev.error && !p.content.querySelector(".err")) p.content.append(tx("p", "err", ev.error));
+  if (!demo && !failed && p.group !== "answer" && p.group !== "repair") p.root.open = false;
+  follow(p);
+}
+
+/* ----- per-group renderers: fill panel.content from the node event ----- */
+const RENDER = {};
+
+RENDER.classify = (turn, p, ev, d) => {
+  const inScope = d.in_scope;
+  const lang = LANGS[d.language] || d.language || "";
+  let by;
+  if (d.decided_by === "local") {
+    by = `Decided by the local model ${d.local_model ?? ""}` + (numOrNull(d.p_in) != null ? `, P(in scope) = ${d.p_in.toFixed(2)}` : "")
+      + (numOrNull(d.local_ms) != null ? `, ${ms(d.local_ms)}` : "");
+  } else if (d.local_unavailable) by = "Decided by the cloud LLM (the local classifier was unavailable)";
+  else if (numOrNull(d.p_in) != null) by = `Decided by the cloud LLM (the local model ${d.local_model ?? ""} was unsure, P = ${d.p_in.toFixed(2)})`;
+  else by = "Decided by the cloud LLM";
+  const row = el("div", { className: "row" });
+  if (typeof inScope === "boolean") row.append(tx("span", "pill " + (inScope ? "ok" : "bad"), inScope ? "in scope" : "out of scope"));
+  if (lang) row.append(tx("span", "pill", lang));
+  p.content.append(row, tx("p", "lead", by));
+  if (d.reason) p.content.append(tx("p", "lead muted", String(d.reason)));
+  p.line.textContent = [inScope === true ? "in scope" : inScope === false ? "out of scope" : "", lang,
+    d.decided_by === "local" ? "local model" : "cloud LLM"].filter(Boolean).join(" · ");
+  if (inScope === false) for (const g of ["retrieve", "generate", "validate", "execute"]) turn.chips[g].li.hidden = true;
+};
+
+function rankChart(model, topK) {
+  const chart = el("div", { className: "rank" });
+  model.rows.forEach((r, i) => {
+    const row = el("div", { className: "rrow " + (r.bridge ? "bridge" : r.selected ? "sel" : "dim") });
+    const track = el("div", { className: "rtrack" });
+    const fill = el("div", { className: "rfill" });
+    fill.setAttribute("data-w", r.pct.toFixed(2));
+    if (!reduced()) fill.style.transitionDelay = Math.min(i * 45, 600) + "ms";
+    if (r.score != null) {
+      fill.append(el("div", { className: "rseg d", style: `width:${r.densePct}%` }));
+      if (r.split) fill.append(el("div", { className: "rseg l", style: `width:${r.lexPct}%` }));
+      track.title = r.dense != null
+        ? `dense ${r.dense.toFixed(3)}` + (r.split ? ` + lexical contribution ${r.lexContribution.toFixed(3)}` : "") + ` = ${r.score.toFixed(3)}`
+        : `score ${r.score.toFixed(3)}`;
+    }
+    track.append(fill);
+    const tag = r.bridge ? tx("span", "pill dash", "bridge via FK") : r.selected ? tx("span", "pill acc", "selected") : tx("span", "", "");
+    tag.classList.add("rtag");
+    row.append(tx("span", "rname", r.table), track, tx("span", "rscore", r.score != null ? r.score.toFixed(3) : "–"), tag);
+    row.firstChild.title = r.table;
+    chart.append(row);
+  });
+  return chart;
+}
+const animateBars = (chart) => {
+  void chart.offsetWidth; // commit width:0 first so the transition runs
+  chart.querySelectorAll(".rfill").forEach((f) => { f.style.width = f.getAttribute("data-w") + "%"; });
+};
+
+RENDER.retrieve = (turn, p, ev, d) => {
+  const model = barModel(d.ranking, d.bridges);
+  const tables = arr(d.tables), bridges = arr(d.bridges), bridgeSet = new Set(bridges);
+  const selected = arr(d.selected).length ? arr(d.selected) : model.rows.filter((r) => r.selected && !r.bridge).map((r) => r.table);
+  if (model.rows.length) lastRankCount = model.rows.filter((r) => !r.bridge || r.score != null).length || lastRankCount;
+  p.line.textContent = (selected.join(", ") || tables.join(", ")) + (bridges.length ? ` + ${plural(bridges.length, "bridge")}` : "");
+  const c = p.content;
+  const retriever = String(d.retriever ?? "retriever");
+  if (model.hasScores) {
+    c.append(tx("p", "lead", `${retriever}: every table is scored against the question (embedding similarity${model.hasLexical ? " plus keyword overlap" : ""}). `
+      + `The top ${d.top_k ?? selected.length} are kept, then tables needed to join them are added.`));
+    const chart = rankChart(model, d.top_k);
+    c.append(chart);
+    const lg = el("div", { className: "legend" });
+    lg.append(el("span", {}, el("i", { style: "background:var(--accent)" }), "dense (embedding similarity)"));
+    if (model.hasLexical) lg.append(el("span", {}, el("i", { style: "background:var(--accent-2)" }), "lexical (keyword overlap)"));
+    c.append(lg);
+    animateBars(chart);
+  } else {
+    c.append(tx("p", "lead", `${retriever}: no ranking, so all ${plural(tables.length || model.rows.length, "table")} go into the prompt.`));
+    c.append(tags(tables.length ? tables : model.rows.map((r) => r.table)));
+  }
+  const hits = obj(d.column_hits);
+  const hitTables = (selected.length ? selected : Object.keys(hits)).filter((t) => arr(hits[t]).length);
+  if (hitTables.length) {
+    c.append(tx("h4", "sec", "Columns that matched the question"));
+    for (const t of hitTables) {
+      const r = el("div", { className: "hitrow" }, tx("span", "tname", t));
+      for (const h0 of arr(hits[t])) {
+        const h = obj(h0);
+        r.append(el("span", { className: "tchip" }, `${t}.${h.column}`, numOrNull(h.score) != null ? tx("em", "", h.score.toFixed(2)) : null));
+      }
+      c.append(r);
+    }
+  }
+  const paths = arr(d.bridge_paths).map(arr).filter((x) => x.length > 1);
+  if (paths.length) {
+    c.append(tx("h4", "sec", "Join bridges"));
+    for (const path of paths) {
+      const ch = el("div", { className: "chain" });
+      path.forEach((t, i) => {
+        if (i) ch.append(tx("span", "arrow", "→"));
+        ch.append(tx("span", "tchip" + (bridgeSet.has(t) ? " br" : ""), String(t)));
+      });
+      c.append(ch);
+    }
+    c.append(tx("p", "note", "added so the joins are possible"));
+  }
+  ensureSchemaPanel(turn, p, d);
+};
+
+/** "What the model sees": a card per table with its columns, built from retrieve_schema.schema. */
+function ensureSchemaPanel(turn, after, d) {
+  const schema = arr(d.schema), raw = typeof d.schema_context === "string" ? d.schema_context : "";
+  if (!schema.length && !raw) return;
+  const sp = makePanel(turn, "schema");
+  after.root.after(sp.root);
+  sp.finished = true; setState(sp, "done"); sp.status.hidden = true;
+  turn.schemaPanel = sp;
+  const hits = obj(d.column_hits), bridgeSet = new Set(arr(d.bridges));
+  let nCols = 0;
+  const grid = el("div", { className: "cards" });
+  for (const t0 of schema) {
+    const t = obj(t0), name = String(t.name ?? "");
+    const hitScores = new Map(arr(hits[name]).map((h) => [String(obj(h).column).toLowerCase(), numOrNull(obj(h).score)]));
+    const ul = el("ul", { className: "scols" });
+    for (const c0 of arr(t.columns)) {
+      const c = obj(c0), cn = String(c.name ?? "");
+      nCols++;
+      const li = el("li");
+      const hit = hitScores.has(cn.toLowerCase());
+      const dot = el("span", { className: "hitdot" + (hit ? "" : " off") });
+      if (hit) { dot.title = "matched the question" + (hitScores.get(cn.toLowerCase()) != null ? ` (${hitScores.get(cn.toLowerCase()).toFixed(2)})` : ""); }
+      li.append(dot, tx("span", "cn", cn), tx("span", "ct", String(c.type ?? "")));
+      if (c.pk) li.append(tx("span", "pk", "PK"));
+      if (c.fk) li.append(tx("span", "fk", "→ " + c.fk));
+      ul.append(li);
+      turn.schemaCols.set(`${name}.${cn}`.toLowerCase(), li);
+    }
+    const card = el("div", { className: "scard" }, el("h4", {}, name, bridgeSet.has(name) ? tx("span", "pill dash", "bridge") : null), ul);
+    turn.schemaCards.set(name.toLowerCase(), card);
+    grid.append(card);
+  }
+  turn.schemaInfo = { tables: schema.length, columns: nCols };
+  sp.line.textContent = `${plural(schema.length, "table")} · ${plural(nCols, "column")}`;
+  const c = sp.content;
+  c.append(tx("p", "lead", `${plural(schema.length, "table")} and ${plural(nCols, "column")} are written into the SQL prompt. `
+    + "A dot marks a column that matched the question; once the SQL is validated, the columns it actually uses light up."));
+  if (schema.length) c.append(grid);
+  turn.schemaNote = tx("p", "note", "");
+  c.append(turn.schemaNote);
+  if (raw) c.append(disclosure("Raw text sent to the model", tx("pre", "msgtext", raw)));
+  sp.meta.textContent = "";
+}
+
+/** The "saw it -> used it" link: highlight the columns the validated SQL references, dim the other tables. */
+function markUsage(turn, d) {
+  if (!turn.schemaCols.size) return;
+  const u = schemaUsage(d);
+  for (const [ref, li] of turn.schemaCols) li.classList.toggle("used", u.cols.has(ref));
+  for (const [name, card] of turn.schemaCards) card.classList.toggle("dim", u.conclusive && !u.tables.has(name));
+  if (u.conclusive && turn.schemaPanel) {
+    const used = [...turn.schemaCards.keys()].filter((n) => u.tables.has(n)).length;
+    const s = `The SQL uses ${used} of ${turn.schemaCards.size} tables and ${plural(u.cols.size, "column")}.`;
+    turn.schemaNote.textContent = s;
+    turn.schemaPanel.line.textContent = `${plural(turn.schemaInfo.tables, "table")} · ${plural(turn.schemaInfo.columns, "column")} · ${s}`;
+  }
+}
+
+RENDER.generate = (turn, p, ev, d) => {
+  const sql = String(d.sql ?? "");
+  p.live.textContent = "";
+  p.stream = null;
+  p.line.textContent = sql.replace(/\s+/g, " ");
+  const c = p.content;
+  if (p.attempt >= 2) c.append(tx("p", "note", `attempt ${p.attempt} · the prompt now includes the failed SQL and the error`));
+  c.append(sqlPre(sql));
+  const used = arr(d.tables_used);
+  if (used.length) { c.append(tx("h4", "sec", "Tables used")); c.append(tags(used)); }
+  const asm = arr(d.assumptions);
+  if (asm.length) {
+    c.append(tx("h4", "sec", "Assumptions the model stated"));
+    const ul = el("ul", { className: "lead" });
+    for (const a of asm) ul.append(tx("li", "", String(a)));
+    c.append(ul);
+  }
+};
+
+RENDER.validate = (turn, p, ev, d) => {
+  const ok = d.ok === true, checks = arr(d.checks), c = p.content;
+  const passed = checks.filter((k) => obj(k).ok === true).length;
+  p.line.textContent = ok ? `${passed}/${checks.length || 7} checks passed` + (d.limit_added && d.limit_enforced != null ? ` · LIMIT ${d.limit_enforced} enforced` : "")
+                          : String(d.error ?? ev.error ?? "rejected");
+  const items = [];
+  if (checks.length) {
+    const ul = el("ul", { className: "checks" });
+    for (const k0 of checks) {
+      const k = obj(k0), st = k.ok === true ? "ok" : k.ok === false ? "bad" : "na";
+      const li = el("li", { className: `fade ck-${st}` }, tx("span", "ckm", st === "ok" ? "✓" : st === "bad" ? "✗" : "–"),
+        el("span", {}, tx("span", "ckn", checkLabel(k.name)), k.detail && st !== "na" ? tx("span", "ckd", String(k.detail)) : null,
+          st === "na" ? tx("span", "ckd", "not reached") : null));
+      ul.append(li); items.push(li);
+    }
+    c.append(ul);
+  }
+  if (!ok) {
+    const e = tx("p", "err", String(d.error ?? ev.error ?? "The SQL was rejected."));
+    c.append(e);
+    if (!checks.length && d.input_sql) c.append(sqlPre(String(d.input_sql)));
+  } else {
+    const extra = el("div", { className: "fade" });
+    if (d.limit_added && d.limit_enforced != null) extra.append(el("div", { className: "row" }, tx("span", "pill acc", `LIMIT ${d.limit_enforced} enforced by the guard`)));
+    const rows = clauseRows(d.clauses);
+    if (rows.length) {
+      extra.append(tx("h4", "sec", "How the query is assembled"));
+      const dl = el("dl", { className: "clauses" });
+      for (const r of rows) {
+        const dd = el("dd");
+        for (const it of r.items) dd.append(tx("div", "", it));
+        dl.append(tx("dt", "", r.label), dd);
+      }
+      extra.append(dl);
+    }
+    if (d.sql && d.input_sql && !sameSql(d.sql, d.input_sql)) {
+      extra.append(disclosure("What the guard rewrote", el("div", { className: "cmp" },
+        el("div", {}, tx("h5", "", "The model wrote"), sqlPre(String(d.input_sql))),
+        el("div", {}, tx("h5", "", "The guard validated"), sqlPre(String(d.sql))))));
+    } else if (!rows.length && d.sql) extra.append(sqlPre(String(d.sql)));
+    const unres = arr(d.unresolved_columns);
+    if (unres.length) extra.append(tx("p", "note", "Could not attribute to a table: " + unres.join(", ")));
+    c.append(extra); items.push(extra);
+    markUsage(turn, d);
+  }
+  items.forEach((it, i) => (reduced() ? it.classList.add("shown") : setTimeout(() => it.classList.add("shown"), 60 + i * 120)));
+};
+
+RENDER.execute = (turn, p, ev, d) => {
+  const c = p.content;
+  if (d.ok === true) {
+    const n = numOrNull(d.row_count) ?? 0, cols = arr(d.columns).map(String), sample = arr(d.sample).slice(0, 3);
+    p.line.textContent = `${plural(n, "row")}` + (ev.latency_ms != null ? ` · ${ms(ev.latency_ms)}` : "");
+    c.append(tx("p", "lead", p.line.textContent));
+    if (cols.length) c.append(tags(cols));
+    if (cols.length && sample.length) {
+      c.append(resultTable(cols, sample));
+      if (n > sample.length) c.append(tx("p", "note", `first ${sample.length} of ${fmtInt(n)} rows`));
+    }
+  } else {
+    const e = String(d.error ?? ev.error ?? "Execution failed");
+    p.line.textContent = e;
+    c.append(tx("p", "err", e));
+  }
+};
+
+const REPAIR_KIND = { guard: "guard", execution: "execution", empty: "empty result" };
+RENDER.repair = (turn, p, ev, d) => {
+  const failedAt = numOrNull(d.failed_attempt) ?? Math.max(turn.attempt, 1);
+  const kind = REPAIR_KIND[d.kind] || String(d.kind ?? "unknown");
+  const left = numOrNull(d.attempts_left);
+  p.line.textContent = `Attempt ${failedAt} failed (${kind}): ${d.error ?? ""}`;
+  p.content.append(tx("p", "err", `Attempt ${failedAt} failed (${kind}): ${d.error ?? ""}`));
+  if (left != null) p.content.append(tx("p", "lead", `attempts left: ${left}`));
+  if (d.failed_sql) p.content.append(sqlPre(String(d.failed_sql)));
+  if (left == null || left > 0) {
+    turn.loop.textContent = `↻ repair · attempt ${failedAt + 1}`;
+    turn.loop.hidden = false;
+    for (const g of ["generate", "validate", "execute"]) setChip(turn, g, "pending", failedAt + 1);
+  } else {
+    turn.loop.textContent = "repair · no attempts left";
+    turn.loop.hidden = false;
+  }
+};
+
+function ensureAnswerEl(p) {
+  if (!p.answerEl) { p.answerEl = tx("p", "answer", ""); p.content.prepend(p.answerEl); }
+  return p.answerEl;
+}
+RENDER.answer = (turn, p, ev, d) => {
+  const a = ensureAnswerEl(p);
+  if (typeof d.answer === "string") a.textContent = d.answer;
+  p.line.textContent = String(d.answer ?? "").replace(/\s+/g, " ").slice(0, 140);
+};
+
+/* =====================================================================
+ * 5. Event handlers
+ * ===================================================================== */
+function onStart(turn, ev) {
+  const group = NODE_GROUP[ev.node];
+  if (!group) return;
+  const p = panelFor(turn, group, true);
+  p.node = ev.node;
+  setChip(turn, group, "running", p.attempt);
+  setStatus(p, runningText(turn, p));
+  if (GROUP_CHIP[group]) {
+    const c = turn.chips[GROUP_CHIP[group]];
+    turn.statusEl.textContent = `Running: ${c.label}` + (p.attempt >= 2 ? ` (attempt ${p.attempt})` : "");
+  } else turn.statusEl.textContent = "Running: repair";
+  startTimer(turn, p);
+  follow(p);
+}
+
+function onPrompt(turn, ev) {
+  const group = NODE_GROUP[ev.node];
+  if (!group) return;
+  const d = obj(ev.data), p = panelFor(turn, group, true);
+  const pd = promptDisclosure(d.messages, d.chars);
+  if (pd) { p.promptHost.textContent = ""; p.promptHost.append(pd); }
+  const chars = numOrNull(d.chars);
+  if (group === "generate") {
+    const info = turn.schemaInfo;
+    setStatus(p, runningText(turn, p), [chars != null ? `prompt ${fmtInt(chars)} chars` : "",
+      info ? `${plural(info.tables, "table")}, ${plural(info.columns, "column")}` : ""].filter(Boolean).join(" · "));
+  } else if (chars != null) setStatus(p, runningText(turn, p), `prompt ${fmtInt(chars)} chars`);
+  follow(p);
+}
+
+function onToken(turn, ev) {
+  const group = NODE_GROUP[ev.node], d = obj(ev.data);
+  if (group === "generate" && typeof d.sql === "string") {
+    const p = panelFor(turn, group, false);
+    if (!p) return;
+    if (!p.stream) { p.stream = el("pre", { className: "sql stream" }); p.live.append(p.stream); }
+    p.stream.textContent = d.sql;
+    p.stream.append(caret());
+    follow(p);
+  } else if (group === "answer" && typeof d.text === "string") {
+    const p = panelFor(turn, group, false);
+    if (!p) return;
+    p.status.hidden = true;
+    const a = ensureAnswerEl(p);
+    a.textContent = d.text;
+    a.append(caret());
+    follow(p);
+  }
+}
+
+function onNode(turn, ev) {
+  const group = NODE_GROUP[ev.node];
+  if (!group) return;
+  if (ev.llm) lastLlm = ev.llm;
+  const d = obj(ev.data), p = panelFor(turn, group, true);
+  p.node = ev.node;
+  RENDER[group](turn, p, ev, d);
+  p.root.querySelectorAll(".caret").forEach((c) => c.remove());
+  const failed = !!ev.error || (group === "validate" && d.ok === false) || (group === "execute" && d.ok === false);
+  finishPanel(turn, p, ev, failed);
+  if (group === "answer") turn.statusEl.textContent = "Answer ready";
+}
+
+function onFinal(turn, f) {
+  turn.finished = true;
+  let p = [...turn.panels].reverse().find((x) => x.group === "answer");
+  if (!p) p = makePanel(turn, "answer");
+  if (!p.finished) finishPanel(turn, p, {}, false);
+  const a = ensureAnswerEl(p);
+  p.root.querySelectorAll(".caret").forEach((c) => c.remove());
+  if (typeof f.answer === "string") a.textContent = f.answer;
+  a.className = "answer" + (f.error ? " err" : "");
+  const c = p.content, cols = arr(f.columns).map(String), rows = arr(f.rows);
+  if (cols.length && rows.length) {
+    c.append(resultTable(cols, rows));
+    c.append(tx("p", "caption", plural(numOrNull(f.row_count) ?? rows.length, "row")));
   }
   if (f.sql) {
     const copy = el("button", { type: "button", textContent: "Copy" });
@@ -231,44 +940,91 @@ function renderFinal(turn, f) {
       try { await navigator.clipboard.writeText(f.sql); copy.textContent = "Copied"; } catch { copy.textContent = "Copy failed"; }
       setTimeout(() => (copy.textContent = "Copy"), 1500);
     };
-    const d = el("details", { className: "sql" }, el("summary", { textContent: "SQL" }), el("pre", { textContent: f.sql }));
-    d.querySelector("summary").append(copy);
-    turn.append(d);
+    const det = el("details", { className: "sql" }, el("summary", { textContent: "SQL" }), sqlPre(String(f.sql)));
+    det.querySelector("summary").append(copy);
+    c.append(det);
   }
-  const s = f.summary;
-  const bits = [`${ms(s.latency_ms)}`, `${s.llm_calls} LLM calls`, `${s.input_tokens} in / ${s.output_tokens} out tokens`, usd(s.cost_usd)];
+  const s = obj(f.summary), bits = [];
+  if (s.latency_ms != null) bits.push(ms(s.latency_ms));
+  if (s.llm_calls != null) bits.push(`${s.llm_calls} LLM calls`);
+  if (s.input_tokens != null) bits.push(`${s.input_tokens} in / ${s.output_tokens ?? "?"} out tokens`);
+  if (s.cost_usd !== undefined) bits.push(usd(s.cost_usd));
   if (s.repaired) bits.push("repaired");
-  turn.append(el("p", { className: "foot", textContent: bits.join(" · ") }));
+  if (bits.length) c.append(tx("p", "foot", bits.join(" · ")));
+  stopTimer(turn);
+  turn.statusEl.textContent = s.latency_ms != null ? `Done in ${ms(s.latency_ms)}` : "Done";
+  if (!demo && turn.schemaPanel) turn.schemaPanel.root.open = false;
+  follow(p);
 }
 
-// ---- running a question
+function failTurn(turn, msg) {
+  turn.finished = true;
+  const p = turn.runningPanel?.p;
+  if (p) { p.finished = true; setState(p, "failed"); p.status.hidden = true; p.root.querySelectorAll(".caret").forEach((c) => c.remove()); setChip(turn, p.group, "failed", p.attempt); }
+  stopTimer(turn);
+  turn.statusEl.textContent = "Failed";
+  turn.root.append(tx("p", "err", msg));
+}
 
+function handleEvent(turn, ev) {
+  try {
+    switch (ev.type) {
+      case "start": return onStart(turn, ev);
+      case "prompt": return onPrompt(turn, ev);
+      case "token": return onToken(turn, ev);
+      case "node": return onNode(turn, ev);
+      case "final": return onFinal(turn, ev);
+      case "error": return failTurn(turn, String(ev.detail ?? "Error"));
+      default: return; // unknown event types are ignored
+    }
+  } catch (e) {
+    console.error("render error for event", ev, e);
+  }
+}
+
+/* =====================================================================
+ * 6. Demo view toggle
+ * ===================================================================== */
+function applyDemo(on, persist) {
+  demo = on;
+  document.body.classList.toggle("demo", on);
+  demoBtn.setAttribute("aria-pressed", String(on));
+  demoBtn.textContent = "Demo view: " + (on ? "on" : "off");
+  for (const t of turns) for (const p of t.panels) {
+    if (on) p.root.open = true;
+    else if (p.state === "done" && p.group !== "answer" && (p.group !== "schema" || t.finished)) p.root.open = false;
+  }
+  if (persist) try { localStorage.setItem("t2sql.demo", on ? "1" : "0"); } catch {}
+}
+demoBtn.addEventListener("click", () => applyDemo(!demo, true));
+try { if (localStorage.getItem("t2sql.demo") === "1") applyDemo(true, false); } catch {}
+
+/* =====================================================================
+ * 7. Running a question: NDJSON reader
+ * ===================================================================== */
 async function ask(question) {
+  if (running) return;
   running = true; box.disabled = send.disabled = true;
   $("#empty")?.remove();
-  const turn = el("section", { className: "turn" });
-  const steps = el("ol", { className: "steps" });
-  steps.setAttribute("aria-live", "polite");
-  const pending = el("li", { className: "step running" }, el("div", { className: "row" },
-    el("span", { className: "mark" }), el("span", { className: "label muted", textContent: "Running…" })));
-  steps.append(pending);
-  turn.append(el("p", { className: "q", textContent: question }), steps);
-  thread.append(turn);
-  turn.scrollIntoView({ block: "start" });
+  const turn = newTurn(question);
+  turns.push(turn);
+  thread.append(turn.root);
+  turn.root.scrollIntoView({ block: "start" });
+  turn.statusEl.textContent = "Waiting for the first event…";
 
-  const fail = (msg) => turn.append(el("p", { className: "err", textContent: msg }));
-  const handle = (ev) => {
-    if (ev.type === "node") steps.insertBefore(stepRow(ev), pending);
-    else if (ev.type === "final") { pending.remove(); renderFinal(turn, ev); }
-    else if (ev.type === "error") { pending.remove(); fail(ev.detail); }
+  const line = (s) => {
+    s = s.trim();
+    if (!s) return;
+    let ev;
+    try { ev = JSON.parse(s); } catch { console.warn("bad NDJSON line", s); return; }
+    handleEvent(turn, obj(ev));
   };
   try {
     const res = await fetch("/ask/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question }) });
     if (!res.ok) {
-      pending.remove();
       let d = res.statusText;
       try { const j = await res.json(); d = typeof j.detail === "string" ? j.detail : "Invalid request"; } catch {}
-      fail(`Request failed (${res.status}): ${d}`);
+      failTurn(turn, `Request failed (${res.status}): ${d}`);
     } else {
       const reader = res.body.getReader(), dec = new TextDecoder();
       let buf = "";
@@ -276,18 +1032,16 @@ async function ask(question) {
         const { value, done } = await reader.read();
         buf += dec.decode(value || new Uint8Array(), { stream: !done });
         let i;
-        while ((i = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
-          if (line) handle(JSON.parse(line));
-        }
+        while ((i = buf.indexOf("\n")) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); line(l); }
         if (done) break;
       }
-      if (buf.trim()) handle(JSON.parse(buf));
+      line(buf);
+      if (!turn.finished) failTurn(turn, "The stream ended before a final answer.");
     }
   } catch (e) {
-    fail("Connection problem: " + (e.message || e));
+    failTurn(turn, "Connection problem: " + (e.message || e));
   } finally {
-    pending.remove();
+    stopTimer(turn);
     running = false; box.disabled = send.disabled = false; box.focus();
   }
 }
